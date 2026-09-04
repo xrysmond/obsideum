@@ -3461,5 +3461,205 @@
 }());
 </script>
 
+<!-- ═══════════════════════════════════════════════════════════
+     OBS LOADING OVERLAY
+     Fixed, z-index 500 — above all UI, below toasts (9998).
+     Hidden by default via [hidden] attr → display:none.
+     JS removes [hidden], then RAF adds .visible for the fade.
+     API: window.OBSLoader.show(label?) / hide()
+══════════════════════════════════════════════════════════════ -->
+<div id="obs-loading" class="obs-loading-overlay" aria-live="polite" aria-label="Loading" hidden>
+
+  <svg class="obs-loading-mark" viewBox="0 0 100 100" fill="none" aria-hidden="true">
+    <defs>
+      <!--
+        feFlood + feComposite operator="in" — reliable cross-browser coloured glow.
+        Matches OBS-LOADING.html exactly. Do not change to feColorMatrix.
+      -->
+      <filter id="obs-border-glow"
+              filterUnits="userSpaceOnUse"
+              x="-20" y="-20" width="140" height="140">
+        <feGaussianBlur in="SourceAlpha" stdDeviation="2"    result="blur1"/>
+        <feFlood   flood-color="#9C3DBB" flood-opacity="0.9"  result="c1"/>
+        <feComposite in="c1" in2="blur1" operator="in"        result="glow1"/>
+        <feGaussianBlur in="SourceAlpha" stdDeviation="6"    result="blur2"/>
+        <feFlood   flood-color="#9C3DBB" flood-opacity="0.5"  result="c2"/>
+        <feComposite in="c2" in2="blur2" operator="in"        result="glow2"/>
+        <feMerge>
+          <feMergeNode in="glow2"/>
+          <feMergeNode in="glow1"/>
+          <feMergeNode in="SourceGraphic"/>
+        </feMerge>
+      </filter>
+    </defs>
+
+    <!-- Facets — populated by OBSLoader init below -->
+    <g id="obs-facets"></g>
+
+    <!--
+      Diamond border — square [34,34]→[66,66] rotated 45° around [50,50].
+      Stroke: --em-2 (#BE80DC). Glow: --em (#9C3DBB).
+      Above facets in paint order — always reads clean.
+    -->
+    <rect x="34" y="34" width="32" height="32"
+          fill="none"
+          stroke="#BE80DC"
+          stroke-width="0.5"
+          transform="rotate(45, 50, 50)"
+          filter="url(#obs-border-glow)"/>
+  </svg>
+
+  <!-- Label — empty by default; OBSLoader.show('TEXT') populates it -->
+  <span id="obs-loading-label" class="obs-loading-label"></span>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     OBS LOADER — init + public API
+     Builds facets immediately on parse (overlay is hidden —
+     no visual cost). show/hide manage the fade + animation loop.
+══════════════════════════════════════════════════════════════ -->
+<script>
+(function () {
+  'use strict';
+
+  /* ── Facet geometry — identical algorithm to OBS-LOADING.html ──── */
+  function midpoint(a, b) { return [(a[0]+b[0])/2, (a[1]+b[1])/2]; }
+
+  function splitRight(P, Q, R, depth) {
+    if (depth <= 0) return [[P, Q, R]];
+    var M = midpoint(Q, R);
+    return splitRight(M, P, Q, depth-1).concat(splitRight(M, P, R, depth-1));
+  }
+
+  var WALK      = [3,1,2,0,4,6,5,7];
+  var CENTER    = [50, 50];
+  var CORNERS   = [[34,34],[66,34],[66,66],[34,66]];
+  var QUAD_BASE = [0.11, 0.03, 0.06, 0.19];
+  var QUAD_PEAK = [0.98, 0.92, 0.86, 0.82];
+  var POS_MULT  = [0.60, 0.80, 0.95, 1.00, 1.00, 0.95, 0.80, 0.60];
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  var facets = [];
+
+  function buildFacets() {
+    var inner = document.getElementById('obs-facets');
+    if (!inner) return;
+
+    CORNERS.forEach(function (Q, q) {
+      var R      = CORNERS[(q+1) % 4];
+      var raw    = splitRight(CENTER, Q, R, 3);
+      var walked = WALK.map(function (i) { return raw[i]; });
+
+      walked.forEach(function (tri, pos) {
+        var base = QUAD_BASE[q];
+        var peak = base + (QUAD_PEAK[q] - base) * POS_MULT[pos];
+
+        var poly = document.createElementNS(SVG_NS, 'polygon');
+        poly.setAttribute('points', tri.map(function (p) { return p.join(','); }).join(' '));
+        poly.setAttribute('fill', '#9C3DBB');
+        poly.setAttribute('fill-opacity', base);
+        poly.setAttribute('stroke', 'none');
+        inner.appendChild(poly);
+
+        facets.push({ el: poly, base: base, peak: peak });
+      });
+    });
+  }
+
+  buildFacets(); /* runs immediately — overlay hidden, zero visual cost */
+
+  /* ── Two-wave shine — exact timing from OBS-LOADING.html ──────── */
+  var STEP        = 88;
+  var REVEAL_DUR  = 240;
+  var CLEAR_DUR   = 420;
+  var THRESHOLD   = Math.round(facets.length * 0.75); /* 24 of 32 */
+  var LAUNCH2     = (THRESHOLD - 1) * STEP;           /* 2024ms   */
+  var PAIR_SETTLE = LAUNCH2 + (facets.length - 1) * STEP + CLEAR_DUR; /* 5172ms */
+
+  function fireWave(delay, fn) {
+    facets.forEach(function (f, i) {
+      setTimeout(function () { fn(f); }, delay + i * STEP);
+    });
+  }
+
+  function spawnPair() {
+    var variance = 0.92 + Math.random() * 0.16;
+    fireWave(0, function (f) {
+      var peak = Math.min(1, f.base + (f.peak - f.base) * variance);
+      f.el.style.transition  = 'fill-opacity ' + REVEAL_DUR + 'ms ease-in';
+      f.el.style.fillOpacity = peak;
+    });
+    fireWave(LAUNCH2, function (f) {
+      f.el.style.transition  = 'fill-opacity ' + CLEAR_DUR + 'ms ease-out';
+      f.el.style.fillOpacity = f.base;
+    });
+  }
+
+  var _running = false;
+  var _timer   = null;
+
+  function loopStep() {
+    if (!_running) return;
+    spawnPair();
+    _timer = setTimeout(loopStep, PAIR_SETTLE + 500);
+  }
+
+  function startLoop() {
+    if (_running) return;
+    _running = true;
+    loopStep();
+  }
+
+  function stopLoop() {
+    _running = false;
+    clearTimeout(_timer);
+    /* Reset all facets to resting base opacity */
+    facets.forEach(function (f) {
+      f.el.style.transition  = 'fill-opacity 200ms';
+      f.el.style.fillOpacity = f.base;
+    });
+  }
+
+  /* ── Show / hide ─────────────────────────────────────────────── */
+  var _overlay   = null;
+  var _labelEl   = null;
+  var _hideTimer = null;
+
+  function ensureRefs() {
+    if (!_overlay) {
+      _overlay = document.getElementById('obs-loading');
+      _labelEl = document.getElementById('obs-loading-label');
+    }
+  }
+
+  function show(text) {
+    ensureRefs();
+    if (!_overlay) return;
+    clearTimeout(_hideTimer);
+    if (_labelEl) _labelEl.textContent = text || '';
+    _overlay.hidden = false;             /* display:flex — was display:none   */
+    requestAnimationFrame(function () {
+      _overlay.classList.add('visible'); /* triggers opacity 0→1 transition  */
+    });
+    startLoop();
+  }
+
+  function hide() {
+    ensureRefs();
+    if (!_overlay) return;
+    _overlay.classList.remove('visible'); /* opacity 1→0, 280ms              */
+    stopLoop();
+    _hideTimer = setTimeout(function () {
+      if (_overlay) _overlay.hidden = true; /* restore display:none after fade */
+    }, 280);
+  }
+
+  /* ── Public API ──────────────────────────────────────────────── */
+  window.OBSLoader = { show: show, hide: hide };
+
+}());
+</script>
+
 </body>
 </html>

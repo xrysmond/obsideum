@@ -483,9 +483,7 @@ html, body {
 }
 .btn-primary:hover .btn-inner {
   border-color: var(--em);
-  box-shadow:
-    0 0 40px rgba(156,61,187,.45),
-    0 0 80px rgba(156,61,187,.18);
+  box-shadow: 0 0 14px rgba(156,61,187,.14);
 }
 .btn-primary:hover .btn-inner::before { transform: scaleY(1); }
 .btn-primary:hover .btn-inner::after  { transform: translateY(0); }
@@ -553,9 +551,7 @@ html, body {
 }
 .btn-white:hover .btn-inner {
   border-color: rgba(222,228,244,.80);
-  box-shadow:
-    0 0 28px rgba(222,228,244,.22),
-    0 0 55px rgba(222,228,244,.08);
+  box-shadow: 0 0 10px rgba(222,228,244,.09);
 }
 .btn-white:hover .btn-inner span  { color: var(--br); }
 .btn-white:hover .btn-inner::before { transform: scaleY(1); }
@@ -1241,4 +1237,58 @@ html, body {
     backdrop-filter: blur(24px) saturate(130%);
     -webkit-backdrop-filter: blur(24px) saturate(130%);
   }
+}
+
+/* ════════════════════════════════════════════════════════
+   OBS LOADING MARK
+   Fixed overlay — covers viewport during async ops.
+   Fade in: 240ms ease-out. Fade out: 280ms ease-out.
+   JS API: window.OBSLoader.show(label?) / hide()
+════════════════════════════════════════════════════════ */
+.obs-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-4);
+  background: rgba(7,7,9,.76);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  backdrop-filter: blur(16px) saturate(120%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 280ms var(--ease-out);
+}
+.obs-loading-overlay.visible {
+  opacity: 1;
+  pointer-events: all;
+  transition: opacity 240ms var(--ease-out);
+}
+
+/* SVG mark — overflow:visible lets the glow filter bleed cleanly */
+.obs-loading-mark {
+  width: 72px;
+  height: 72px;
+  overflow: visible;
+  display: block;
+}
+
+/* Rotate facet group to align with diamond border */
+#obs-facets {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: rotate(45deg);
+}
+
+/* Status label — appears below the mark */
+.obs-loading-label {
+  font-family: var(--fm);
+  font-size: .58rem;
+  letter-spacing: .52em;
+  text-transform: uppercase;
+  color: var(--dim);
+  line-height: 1;
+  min-height: 1em; /* reserves space even when empty so layout doesn't shift */
 }
