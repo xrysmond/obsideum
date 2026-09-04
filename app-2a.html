@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OBSIDEUM</title>
+  <link rel="stylesheet" href="core.css">
+  <!-- ethers@5.7 — required by wallet.js before wallet.js loads -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+  <style>
+    /* ── Canvas — always behind, fixed, full screen ── */
+    #crystal-canvas,
+    #particle-canvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* ── Desktop grid ── */
+    .app-desktop {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .content-area {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      overflow: hidden;
+    }
+
+    .markets-layout { display: contents; }
+
+    .token-list-col {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-right: 1px solid var(--trace);
+    }
+
+    .token-list { flex: 1; overflow-y: auto; }
+
+    .right-panel { overflow: hidden; min-width: 360px; }
+
+    .settings-layout {
+      grid-column: 1 / -1;
+      overflow-y: auto;
+    }
+
+    /* ── Sidebar shell ── */
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    /* ── Sidebar — mobile-pill depth applied to the vertical panel ──
+       Matches the floating pill's exact background, blur, and shadow
+       language — adapted: shadow casts right instead of down.        ── */
+    #sidebar {
+      background: rgba(7,7,9,.92);
+      -webkit-backdrop-filter: blur(28px) saturate(160%) brightness(.96);
+      backdrop-filter: blur(28px) saturate(160%) brightness(.96);
+      border: none;
+      border-right: 1px solid rgba(156,61,187,.22);
+      box-shadow:
+        0 0 0 0.5px rgba(156,61,187,.10),
+        inset -1px 0 0 rgba(190,128,220,.08),
+        6px 0 32px -4px  rgba(0,0,0,.60),
+        20px 0 60px -12px rgba(0,0,0,.80);
+    }
+
+    .sidebar-wordmark {
+      font-family: var(--fd);
+      font-weight: 400;
+      font-size: .92rem;
+      letter-spacing: .20em;
+      color: var(--br);
+      padding: var(--sp-4) var(--sp-3) var(--sp-5);
+      flex-shrink: 0;
+    }
+
+    /* ── Sidebar nav — position:relative anchors the sliding indicator ── */
+    .sidebar-nav {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      position: relative;
+    }
+
+    /* ── Sliding left-edge indicator ──
+       Mirrors mobile top-edge pill: same glow, same spring timing.
+       JS drives translateY + height.                                  ── */
+    .sidebar-nav-indicator {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 2px;
+      height: 46px;                   /* JS overrides on first paint   */
+      background: var(--em-2);
+      box-shadow:
+        0 0 6px 1px rgba(156,61,187,.70),
+        0 0 18px 4px rgba(156,61,187,.30);
+      transition:
+        transform 450ms var(--ease-spr),
+        height    350ms var(--ease-spr);
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    /* ── Desktop nav items — opacity-driven, icon + label ──
+       Inactive: .28 opacity, matching mobile inactive state.
+       Active:   full opacity, no background fill, indicator does the work. ── */
+    .sidebar-nav .nav-item {
+      opacity: .28;
+      color: var(--em-2);
+      padding: .82rem .75rem;
+      transition:
+        opacity    200ms var(--ease-std),
+        background 140ms var(--ease-std),
+        transform  300ms var(--ease-spr);
+    }
+    /* Indicator replaces the pseudo-element left bar from core.css */
+    .sidebar-nav .nav-item::before {
+      display: none;
+    }
+    .sidebar-nav .nav-item.active {
+      opacity: 1;
+      color: var(--em-2);
+      background: transparent;
+    }
+    .sidebar-nav .nav-item:hover:not(.active) {
+      opacity: .55;
+      background: transparent;
+    }
+    .sidebar-nav .nav-item:active {
+      transform: scale(.96);
+      transition: transform 80ms var(--ease-spr);
+    }
+
+    /* ── Nav icon — thin stroke, inherits currentColor from item ── */
+    .nav-icon {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      display: block;
+      flex-shrink: 0;
+    }
+
+    /* ── Nav label ── */
+    .nav-label {
+      font-family: var(--fm);
+      font-size: .64rem;
+      letter-spacing: .26em;
+      text-transform: uppercase;
+      line-height: 1;
+    }
+
+    /* ── Spacer — flex pushes wallet info + settings to bottom ── */
+    .sidebar-spacer { flex: 1; }
+
+    /* ── Wallet + network block ── */
+    .sidebar-wallet-wrap {
+      border-top: 1px solid var(--trace);
+      padding: var(--sp-3) var(--sp-3) var(--sp-1);
+    }
+
+    .sidebar-wallet {
+      font-family: var(--fm);
+      font-size: .70rem;
+      letter-spacing: .04em;
+      color: var(--dim);
+      min-height: 18px;
+      padding-bottom: var(--sp-1);
+      transition: opacity 100ms var(--ease-std);
+    }
+
+    .sidebar-network {
+      font-family: var(--fm);
+      font-size: .58rem;
+      letter-spacing: .10em;
+      color: var(--dim);
+      text-transform: uppercase;
+      min-height: 14px;
+      padding-bottom: var(--sp-2);
+      transition: color 140ms var(--ease-std);
+    }
+
+    /* ── Button resets ── */
+    .nav-item {
+      background: transparent;
+      border: none;
+    }
+
+    /* ── Settings button — border-top separates it from wallet info ── */
+    .nav-item--settings {
+      background: transparent;
+      border: none;
+      border-top: 1px solid var(--trace);
+      width: 100%;
+      text-align: left;
+    }
+
+    .nav-gear { flex-shrink: 0; }
+
+    /* ── Search bar ── */
+    .search-wrap {
+      padding: var(--sp-3);
+      border-bottom: 1px solid var(--trace);
+      flex-shrink: 0;
+    }
+
+    /* ── Right panel — content + transitions ── */
+    .panel-content {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      transition: opacity 160ms var(--ease-std);
+    }
+
+    .panel-content.leaving  { opacity: 0; }
+
+    .panel-content.entering {
+      animation: panelIn 240ms var(--ease-std) forwards;
+    }
+
+    @keyframes panelIn {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+
+    .panel-null-state {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .panel-null-label {
+      font-family: var(--fm);
+      font-size: .68rem;
+      letter-spacing: .44em;
+      color: var(--dim);
+      text-transform: uppercase;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 767px) {
+      .app-desktop { display: none; }
+      .app-mobile {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        height: 100dvh;
+        position: relative;
+        z-index: 1;
+      }
+    }
+    @media (min-width: 768px) {
+      .app-desktop { display: grid; }
+      .app-mobile  { display: none; }
+    }
+
+    /* ── Mobile layout ── */
+    .mobile-top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--sp-3);
+      height: 56px;
+      flex-shrink: 0;
+      position: relative;
+      border-bottom: 1px solid var(--trace);
+    }
+
+    .mobile-content {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .mobile-view {
+      position: absolute;
+      inset: 0;
+      overflow-y: auto;
+    }
+
+    /* ── Mobile bottom nav — floating glassmorphism pill ── */
+    .mobile-bottom-nav {
+      display: flex;
+      height: 62px;
+      flex-shrink: 0;
+      margin: 0 12px calc(env(safe-area-inset-bottom, 0px) + 12px);
+      background: rgba(7,7,9,.92);
+      -webkit-backdrop-filter: blur(28px) saturate(160%) brightness(.96);
+      backdrop-filter: blur(28px) saturate(160%) brightness(.96);
+      border: 1px solid rgba(156,61,187,.22);
+      box-shadow:
+        0 0 0 0.5px rgba(156,61,187,.12),
+        inset 0 1px 0 rgba(190,128,220,.08),
+        0 8px 32px -8px rgba(0,0,0,.6),
+        0 24px 60px -20px rgba(0,0,0,.85);
+      position: relative;
+      z-index: 200;
+    }
+
+    /* Sliding top-edge indicator — glows and travels with spring */
+    .mobile-nav-indicator {
+      position: absolute;
+      top: -1px;
+      left: 0;
+      height: 2px;
+      width: 50%;
+      background: var(--em-2);
+      box-shadow:
+        0 0 6px 1px rgba(156,61,187,.7),
+        0 0 18px 4px rgba(156,61,187,.3);
+      transition: transform 450ms var(--ease-spr);
+      pointer-events: none;
+    }
+
+    /* Mobile wordmark — centered absolutely over the flex row */
+    .mobile-wordmark {
+      font-family: var(--fd);
+      font-weight: 400;
+      font-size: .80rem;
+      letter-spacing: .18em;
+      color: var(--br);
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    /* Mobile back button */
+    .mobile-back {
+      background: transparent;
+      border: none;
+      color: var(--dim);
+      cursor: none;
+      min-width: 44px;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: color 140ms var(--ease-std);
+    }
+    .mobile-back:hover { color: var(--bd); }
+
+    /* Mobile top-right action cluster */
+    .mobile-top-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--sp-1);
+      flex-shrink: 0;
+    }
+
+    /* Mobile icon buttons */
+    .mobile-icon-btn {
+      background: transparent;
+      border: none;
+      color: var(--dim);
+      cursor: none;
+      min-width: 44px;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 140ms var(--ease-std);
+    }
+    .mobile-icon-btn:hover { color: var(--bd); }
+
+    /* Nav items — icon + label stacked, opacity-driven states */
+    .mobile-nav-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      background: transparent;
+      border: none;
+      opacity: .30;
+      padding: 8px 0;
+      cursor: none;
+      -webkit-user-select: none;
+      user-select: none;
+      transition: opacity 200ms var(--ease-std), transform 300ms var(--ease-spr);
+    }
+    .mobile-nav-item:active              { transform: scale(.92); transition: transform 80ms var(--ease-spr); }
+    .mobile-nav-item.active              { opacity: 1; }
+    .mobile-nav-item:hover:not(.active)  { opacity: .52; }
+
+    /* SVG icon inside mobile nav item */
+    .mobile-nav-icon {
+      width: 18px;
+      height: 18px;
+      stroke: var(--em-2);
+      fill: none;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      display: block;
+    }
+
+    /* Label under mobile icon */
+    .mobile-nav-label {
+      font-family: var(--fm);
+      font-size: 7.5px;
+      letter-spacing: .26em;
+      text-transform: uppercase;
+      color: var(--em-2);
+      line-height: 1;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Custom cursor — desktop only; hidden on mobile via core.css -->
+<div id="cur"></div>
+
+<!-- Toast container -->
+<div id="toast-wrap"></div>
+
+<!-- Canvas layers — always behind everything -->
+<canvas id="crystal-canvas"></canvas>
+<canvas id="particle-canvas"></canvas>
+
+<!-- ── DESKTOP LAYOUT (≥ 768px) ─────────────────────────────────── -->
+<div id="app-desktop" class="app-desktop">
+
+  <!-- Sidebar — 220px fixed, glass-m base + #sidebar depth override -->
+  <aside id="sidebar" class="sidebar glass-m">
+    <div class="sidebar-wordmark">OBSIDEUM</div>
+
+    <nav class="sidebar-nav">
+      <!-- Sliding left-edge indicator — JS positions this with spring -->
+      <div class="sidebar-nav-indicator" id="sidebar-nav-indicator"></div>
+
+      <button class="nav-item active" data-view="markets">
+        <svg class="nav-icon" viewBox="0 0 24 24">
+          <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
+          <polyline points="16 7 22 7 22 13"/>
+        </svg>
+        <span class="nav-label">Markets</span>
+      </button>
+
+      <button class="nav-item" data-view="swap">
+        <svg class="nav-icon" viewBox="0 0 24 24">
+          <path d="M7 20V4m0 0L3 8m4-4l4 4"/>
+          <path d="M17 4v16m0 0l4-4m-4 4l-4-4"/>
+        </svg>
+        <span class="nav-label">Swap</span>
+      </button>
+
+      <button class="nav-item" data-view="history">
+        <svg class="nav-icon" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9"/>
+          <path d="M12 7v5l3.5 3.5"/>
+        </svg>
+        <span class="nav-label">History</span>
+      </button>
+
+      <!-- Spacer — pushes wallet info + settings to the bottom -->
+      <div class="sidebar-spacer"></div>
+
+      <!-- Wallet + network display -->
+      <div class="sidebar-wallet-wrap">
+        <div class="sidebar-wallet" id="sidebar-wallet"></div>
+        <div class="sidebar-network" id="sidebar-network"></div>
+      </div>
+
+      <!-- Settings — inside nav so indicator can reach it -->
+      <button class="nav-item nav-item--settings" id="settings-btn" data-view="settings">
+        <svg class="nav-icon nav-gear" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" stroke-width="1.5"
+          stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        <span class="nav-label">Settings</span>
+      </button>
+    </nav>
+  </aside>
+
+  <!-- Content area — everything right of sidebar -->
+  <div id="content-area" class="content-area">
+
+    <!-- Markets layout: token list + right panel -->
+    <div id="markets-layout" class="markets-layout">
+
+      <!-- Token list column — 360px fixed -->
+      <div id="token-list-col" class="token-list-col">
+        <div class="search-wrap">
+          <input class="glass-input token-search" id="token-search"
+            type="text" placeholder="Search tokens..."
+            autocomplete="off" spellcheck="false">
+        </div>
+        <div id="token-list" class="token-list">
+          <!-- Token rows rendered here by Phase 3B -->
+        </div>
+      </div>
+
+      <!-- Right panel — fills remaining width -->
+      <div id="right-panel" class="right-panel glass-m">
+        <div id="right-panel-content" class="panel-content">
+          <div class="panel-null-state" id="panel-null">
+            <span class="panel-null-label">Select a token to begin</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Settings layout — full content area, hidden by default -->
+    <div id="settings-layout" class="settings-layout" hidden>
+      <!-- Settings rendered here by Phase 8A -->
+    </div>
+
+  </div>
+</div>
+
+<!-- ── MOBILE LAYOUT (< 768px) ──────────────────────────────────── -->
+<div id="app-mobile" class="app-mobile">
+
+  <!-- Top bar -->
+  <div id="mobile-top-bar" class="mobile-top-bar">
+    <button id="mobile-back" class="mobile-back" hidden aria-label="Back">
+      <svg viewBox="0 0 20 20" width="20" height="20"
+        fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M12 4l-6 6 6 6"/>
+      </svg>
+    </button>
+    <span class="mobile-wordmark">OBSIDEUM</span>
+    <div class="mobile-top-actions">
+      <button id="mobile-history-btn" class="mobile-icon-btn" aria-label="History">
+        <svg viewBox="0 0 20 20" width="20" height="20"
+          fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="10" cy="10" r="8"/>
+          <path d="M10 6v4l3 3"/>
+        </svg>
+      </button>
+      <button id="mobile-settings-btn" class="mobile-icon-btn" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="20" height="20"
+          fill="none" stroke="currentColor" stroke-width="1.5"
+          stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Mobile views — one visible at a time -->
+  <div id="mobile-content" class="mobile-content">
+    <div id="mobile-markets"  class="mobile-view"><!-- Phase 3B --></div>
+    <div id="mobile-token"    class="mobile-view" hidden><!-- Phase 4C --></div>
+    <div id="mobile-swap"     class="mobile-view" hidden><!-- Phase 5A --></div>
+    <div id="mobile-history"  class="mobile-view" hidden><!-- Phase 5A --></div>
+    <div id="mobile-settings" class="mobile-view" hidden><!-- Phase 8A --></div>
+  </div>
+
+  <!-- Bottom nav — fixed, always visible -->
+  <nav id="mobile-bottom-nav" class="mobile-bottom-nav">
+    <!-- Sliding glow indicator — JS moves this with translateX -->
+    <div class="mobile-nav-indicator" id="mobile-nav-indicator"></div>
+
+    <button class="mobile-nav-item active" data-mobile-view="markets" aria-label="Markets">
+      <svg class="mobile-nav-icon" viewBox="0 0 24 24">
+        <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
+        <polyline points="16 7 22 7 22 13"/>
+      </svg>
+      <span class="mobile-nav-label">Markets</span>
+    </button>
+
+    <button class="mobile-nav-item" data-mobile-view="swap" aria-label="Swap">
+      <svg class="mobile-nav-icon" viewBox="0 0 24 24">
+        <path d="M7 20V4m0 0L3 8m4-4l4 4"/>
+        <path d="M17 4v16m0 0l4-4m-4 4l-4-4"/>
+      </svg>
+      <span class="mobile-nav-label">Swap</span>
+    </button>
+  </nav>
+
+</div>
+
+<!-- Scripts — bottom of body, exact order, never reorder -->
+<script src="fx.js"></script>
+<script src="state.js"></script>
+<script src="wallet.js"></script>
+<script src="prices.js"></script>
+<script src="swap.js"></script>
+<script>
+  /* ── showToast — global, available to all scripts ── */
+  function showToast(message, type) {
+    var wrap = document.getElementById('toast-wrap');
+    if (!wrap) return;
+    var el = document.createElement('div');
+    el.className = 'toast' + (type ? ' ' + type : '');
+    el.textContent = message;
+    wrap.appendChild(el);
+    setTimeout(function () {
+      el.style.transition = 'opacity 300ms var(--ease-std)';
+      el.style.opacity = '0';
+      setTimeout(function () {
+        if (el.parentNode) el.parentNode.removeChild(el);
+      }, 300);
+    }, 3200);
+  }
+
+  /* ── Init ── */
+  FX.init(document.getElementById('crystal-canvas'), document.getElementById('particle-canvas'));
+  FX.start();
+  checkExistingConnection();
+</script>
+
+<!-- ── Phase 2C — Navigation wiring ─────────────────────────────── -->
+<script>
+(function () {
+  'use strict';
+
+  /* ── Element cache ── */
+  var marketsLayout  = document.getElementById('markets-layout');
+  var settingsLayout = document.getElementById('settings-layout');
+  var rightContent   = document.getElementById('right-panel-content');
+  var panelNull      = document.getElementById('panel-null');
+  var mobileBack     = document.getElementById('mobile-back');
+  var sidebarWallet  = document.getElementById('sidebar-wallet');
+  var sidebarNetwork = document.getElementById('sidebar-network');
+
+  var mobileViews = {
+    markets:  document.getElementById('mobile-markets'),
+    token:    document.getElementById('mobile-token'),
+    swap:     document.getElementById('mobile-swap'),
+    history:  document.getElementById('mobile-history'),
+    settings: document.getElementById('mobile-settings'),
+  };
+
+  var NETWORK_NAMES = {
+    1: 'Ethereum', 42161: 'Arbitrum One', 8453: 'Base', 10: 'Optimism',
+  };
+
+  /* ── Right panel ──────────────────────────────────────────────── */
+
+  /*
+   * renderPanelContent — Phases 4C / 5A inject real content here.
+   * Phase 2C: manages null state only. Anything non-null hides the null label.
+   */
+  function renderPanelContent(state) {
+    panelNull.hidden = (state !== null);
+  }
+
+  function setRightPanel(state) {
+    rightContent.classList.add('leaving');
+    setTimeout(function () {
+      renderPanelContent(state);
+      rightContent.classList.remove('leaving');
+      void rightContent.offsetWidth; /* force reflow before entering */
+      rightContent.classList.add('entering');
+      setTimeout(function () { rightContent.classList.remove('entering'); }, 240);
+    }, 160);
+  }
+
+  /* ── Desktop view ─────────────────────────────────────────────── */
+
+  function setView(view) {
+    if (view === 'settings') {
+      marketsLayout.style.display = 'none';
+      settingsLayout.hidden = false;
+    } else {
+      marketsLayout.style.display = '';
+      settingsLayout.hidden = true;
+    }
+    updateSidebarActive();
+  }
+
+  /*
+   * Sidebar active state — accounts for view, rightPanel, and settings.
+   * data-view="markets"  → active when view=markets and rightPanel=null|token
+   * data-view="swap"     → active when view=markets and rightPanel=swap
+   * data-view="history"  → active when view=markets and rightPanel=history
+   * data-view="settings" → active when view=settings
+   */
+  function updateSidebarActive() {
+    var view  = STATE.view;
+    var panel = STATE.rightPanel;
+    document.querySelectorAll('.sidebar-nav .nav-item').forEach(function (btn) {
+      var v = btn.dataset.view;
+      var active =
+        (v === 'markets'  && view === 'markets'  && (panel === null || panel === 'token')) ||
+        (v === 'swap'     && view === 'markets'  && panel === 'swap')    ||
+        (v === 'history'  && view === 'markets'  && panel === 'history') ||
+        (v === 'settings' && view === 'settings');
+      btn.classList.toggle('active', active);
+    });
+    updateSidebarIndicator();
+  }
+
+  /* ── Sliding sidebar indicator ────────────────────────────────────
+   *
+   * On first call: snaps to position instantly (no transition flash),
+   * then re-enables the spring transition for all subsequent moves.
+   *
+   * On subsequent calls (user clicks): spring-animates translateY and
+   * height — mirrors the horizontal spring on the mobile pill indicator.
+   *
+   * ──────────────────────────────────────────────────────────────── */
+  function updateSidebarIndicator() {
+    var indicator  = document.getElementById('sidebar-nav-indicator');
+    if (!indicator) return;
+
+    var activeItem = document.querySelector('.sidebar-nav .nav-item.active');
+    if (!activeItem) {
+      indicator.style.opacity = '0';
+      return;
+    }
+
+    /* First paint — jump without animation, then restore transition */
+    if (!indicator._ready) {
+      indicator.style.transition = 'none';
+      indicator.style.height     = activeItem.offsetHeight + 'px';
+      indicator.style.transform  = 'translateY(' + activeItem.offsetTop + 'px)';
+      indicator.style.opacity    = '1';
+      indicator._ready = true;
+      requestAnimationFrame(function () {
+        indicator.style.transition = ''; /* restore CSS-defined transition */
+      });
+      return;
+    }
+
+    indicator.style.opacity   = '1';
+    indicator.style.height    = activeItem.offsetHeight + 'px';
+    indicator.style.transform = 'translateY(' + activeItem.offsetTop + 'px)';
+  }
+
+  /* ── Mobile view ──────────────────────────────────────────────── */
+
+  function setMobileView(view) {
+    Object.keys(mobileViews).forEach(function (key) {
+      mobileViews[key].hidden = (key !== view);
+    });
+    /* Back arrow — only visible when drilled into token detail */
+    mobileBack.hidden = (view !== 'token');
+    updateMobileNavActive(view);
+  }
+
+  function updateMobileNavActive(view) {
+    var items = Array.from(document.querySelectorAll('.mobile-nav-item'));
+    items.forEach(function (btn) {
+      btn.classList.toggle('active', btn.dataset.mobileView === view);
+    });
+    /* Slide the indicator to the active tab */
+    var idx = items.findIndex(function (btn) { return btn.dataset.mobileView === view; });
+    var indicator = document.getElementById('mobile-nav-indicator');
+    if (indicator && idx > -1) {
+      indicator.style.transform = 'translateX(' + (idx * 100) + '%)';
+    }
+  }
+
+  /* Saves previous view before navigating — powers the back arrow */
+  function navigateMobile(view) {
+    setState({ prevMobileView: STATE.mobileView, mobileView: view });
+  }
+
+  /* ── Sidebar wallet + network display ─────────────────────────── */
+
+  function truncateAddress(addr) {
+    return addr ? addr.slice(0, 6) + '...' + addr.slice(-4) : '';
+  }
+
+  /* ── State listeners ──────────────────────────────────────────── */
+
+  document.addEventListener('state:view', function (e) {
+    setView(e.detail);
+  });
+
+  document.addEventListener('state:rightPanel', function (e) {
+    setRightPanel(e.detail);
+    updateSidebarActive(); /* rightPanel change also updates sidebar active */
+  });
+
+  document.addEventListener('state:mobileView', function (e) {
+    setMobileView(e.detail);
+  });
+
+  /* Wallet address — populated by Phase 6A, displayed here */
+  document.addEventListener('state:wallet', function (e) {
+    var addr = e.detail;
+    sidebarWallet.textContent = addr ? truncateAddress(addr) : '';
+    sidebarWallet.style.color = '';
+  });
+
+  /* ENS name — fades in over address when resolved */
+  document.addEventListener('state:ens', function (e) {
+    var ens = e.detail;
+    if (!ens || !STATE.wallet) return;
+    sidebarWallet.style.opacity = '0';
+    setTimeout(function () {
+      sidebarWallet.textContent = ens;
+      sidebarWallet.style.color   = 'var(--em-2)';
+      sidebarWallet.style.opacity = '1';
+    }, 100);
+  });
+
+  /* Network badge — warn if mismatched with defaultNetwork setting */
+  document.addEventListener('state:network', function (e) {
+    var id   = e.detail;
+    var name = NETWORK_NAMES[id] || ('Chain ' + id);
+    sidebarNetwork.textContent = id ? name : '';
+    var wrong = id && STATE.settings.defaultNetwork && id !== STATE.settings.defaultNetwork;
+    sidebarNetwork.style.color = wrong ? 'var(--warn)' : '';
+  });
+
+  /* ── Click bindings ───────────────────────────────────────────── */
+
+  /* Sidebar nav: Markets / Swap / History
+     Settings falls through to its own dedicated handler below.        */
+  document.querySelectorAll('.sidebar-nav .nav-item').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var v = btn.dataset.view;
+      if      (v === 'markets') setState({ view: 'markets', rightPanel: null });
+      else if (v === 'swap')    setState({ view: 'markets', rightPanel: 'swap' });
+      else if (v === 'history') setState({ view: 'markets', rightPanel: 'history' });
+    });
+  });
+
+  /* Settings gear — desktop */
+  document.getElementById('settings-btn').addEventListener('click', function () {
+    setState({ view: 'settings' });
+  });
+
+  /* Mobile bottom nav */
+  document.querySelectorAll('.mobile-nav-item').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var view = btn.dataset.mobileView;
+      if (view) navigateMobile(view);
+    });
+  });
+
+  /* Mobile top bar — history + settings */
+  document.getElementById('mobile-history-btn').addEventListener('click', function () {
+    navigateMobile('history');
+  });
+  document.getElementById('mobile-settings-btn').addEventListener('click', function () {
+    navigateMobile('settings');
+  });
+
+  /* Mobile back arrow */
+  mobileBack.addEventListener('click', function () {
+    navigateMobile(STATE.prevMobileView || 'markets');
+  });
+
+  /* Reposition indicator on resize (viewport shift, zoom, etc.) */
+  window.addEventListener('resize', updateSidebarIndicator);
+
+  /* ── Init — apply current STATE on load ───────────────────────── */
+  setView(STATE.view            || 'markets');
+  setMobileView(STATE.mobileView || 'markets');
+  setRightPanel(STATE.rightPanel);   /* draws null state immediately */
+  /* Indicator needs one layout frame before measuring offsetTop     */
+  requestAnimationFrame(updateSidebarIndicator);
+
+}());
+</script>
+
+</body>
+</html>
