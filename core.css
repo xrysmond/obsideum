@@ -1,0 +1,1244 @@
+/* ═══════════════════════════════════════════════════════════════════
+   OBSIDEUM — core.css
+   Complete design system. All variables. All shared components.
+   UNCHAINED9. Built by Waeven Xrysmond.
+═══════════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400&family=Electrolize&display=swap');
+
+/* ════════════════════════════════════════════════════════
+   RESET
+════════════════════════════════════════════════════════ */
+*,*::before,*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+button,[role="button"] { touch-action: manipulation; }
+input,button,select,textarea { font-family: inherit; }
+a { text-decoration: none; color: inherit; }
+img,svg { display: block; }
+[hidden] { display: none !important; } /* prevent author display rules overriding hidden attribute */
+
+/* ════════════════════════════════════════════════════════
+   VARIABLES
+════════════════════════════════════════════════════════ */
+:root {
+  /* Foundation */
+  --void:      #070709;
+  --br:        #DEE4F4;
+  --bd:        #909AAE;
+  --dim:       #6B7090;
+  --trace:     rgba(222,228,244,.055);
+  --hi:        rgba(222,228,244,.09);
+
+  /* Accent — violet primary */
+  --em:        #9C3DBB;
+  --em-lo:     rgba(156,61,187,.32);
+  --em-tr:     rgba(156,61,187,.08);
+  --em-glow:   rgba(156,61,187,.14);
+  --em-dim:    rgba(156,61,187,.07);
+
+  /* Accent — violet secondary */
+  --em-2:      #BE80DC;
+
+  /* Semantic */
+  --up:        rgba(80,200,140,.88);
+  --dn:        rgba(220,80,80,.82);
+  --warn:      rgba(220,180,40,.82);
+
+  /* Easing — never write ease / ease-in-out / linear in transitions */
+  --ease-out:  cubic-bezier(0.0,0.0,0.2,1);
+  --ease-in:   cubic-bezier(0.4,0.0,1,1);
+  --ease-std:  cubic-bezier(0.4,0.0,0.2,1);
+  --ease-spr:  cubic-bezier(0.16,1,0.3,1);
+
+  /* Typography */
+  --fd: 'Cinzel', serif;
+  --fb: 'Electrolize', monospace;
+  --fm: 'Electrolize', monospace;
+
+  /* Spacing — 8px grid */
+  --sp-1:  4px;
+  --sp-2:  8px;
+  --sp-3:  16px;
+  --sp-4:  24px;
+  --sp-5:  32px;
+  --sp-6:  48px;
+}
+
+/* ════════════════════════════════════════════════════════
+   BASE
+════════════════════════════════════════════════════════ */
+html, body {
+  width: 100%;
+  height: 100%;
+  background: var(--void);
+  background-image:
+    radial-gradient(ellipse 75% 55% at 18% 85%, rgba(156,61,187,.18) 0%, transparent 58%),
+    radial-gradient(ellipse 65% 48% at 82% 14%, rgba(100,30,140,.14) 0%, transparent 52%),
+    radial-gradient(ellipse 90% 35% at 50% 50%, rgba(60,10,80,.10)   0%, transparent 62%);
+  color: var(--bd);
+  font-family: var(--fb);
+  overflow: hidden;
+  cursor: none;
+}
+
+/* ════════════════════════════════════════════════════════
+   CANVAS LAYERS
+
+   position: fixed — covers the full viewport in app.html.
+   index.html overrides to position: absolute to confine the
+   crystal within .landing-hero (canvas scrolls away with the
+   hero section; scroll sections glass over the body gradient).
+
+   NO will-change here. FX.js draws via clearRect/path/drawImage —
+   it never animates the CSS transform property of the canvas element.
+   will-change: transform was promoting each canvas to an isolated GPU
+   compositor layer, which prevented backdrop-filter on glass panels
+   from sampling the live crystal. The 2D canvas context is already
+   GPU-accelerated for paint ops; the hint was both wrong and harmful.
+════════════════════════════════════════════════════════ */
+#crystal-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: none;
+}
+#particle-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* ════════════════════════════════════════════════════════
+   CURSOR — desktop only, hidden on mobile
+════════════════════════════════════════════════════════ */
+#cur {
+  position: fixed;
+  width: 24px;
+  height: 24px;
+  z-index: 999;
+  pointer-events: none;
+  transform: translate(-50%,-50%);
+}
+#cur::before,
+#cur::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  background: var(--em);
+  transition:
+    width    100ms var(--ease-spr),
+    height   100ms var(--ease-spr),
+    background 150ms var(--ease-std);
+}
+#cur::before { width: 14px; height: 1px;  transform: translate(-50%,-50%); }
+#cur::after  { width: 1px;  height: 14px; transform: translate(-50%,-50%); }
+#cur.hl::before { width: 22px; background: var(--br); }
+#cur.hl::after  { height: 22px; background: var(--br); }
+
+/* ════════════════════════════════════════════════════════
+   PAGE PHASES
+   .ph  — fixed, centered (landing panels)
+   .sph — fixed, scrollable (app views)
+════════════════════════════════════════════════════════ */
+.ph {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 320ms var(--ease-in);
+  will-change: opacity;
+}
+.ph.on {
+  opacity: 1;
+  pointer-events: all;
+  transition: opacity 420ms var(--ease-out);
+}
+
+.sph {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 10;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 320ms var(--ease-in);
+  -webkit-overflow-scrolling: touch;
+  will-change: opacity;
+}
+.sph.on {
+  opacity: 1;
+  pointer-events: all;
+  transition: opacity 420ms var(--ease-out);
+}
+
+/* ════════════════════════════════════════════════════════
+   GLASSMORPHISM — three tiers, used correctly
+
+   .glass-s  token rows, stat cells, subtle surfaces
+   .glass-p  swap card, main interactive panels
+   .glass-m  sidebar, overlays, dialogs
+════════════════════════════════════════════════════════ */
+
+/* Tier 1 — surface */
+.glass-s {
+  background: rgba(156,61,187,.03);
+  backdrop-filter: blur(8px) saturate(110%);
+  -webkit-backdrop-filter: blur(8px) saturate(110%);
+  border: 1px solid rgba(156,61,187,.07);
+}
+
+/* Tier 2 — panel */
+.glass-p {
+  background: rgba(7,7,9,.45);
+  backdrop-filter: blur(24px) saturate(130%);
+  -webkit-backdrop-filter: blur(24px) saturate(130%);
+  border: 1px solid rgba(156,61,187,.13);
+  box-shadow:
+    0 0 0 0.5px rgba(156,61,187,.07),
+    0 8px 32px rgba(0,0,0,.45),
+    inset 0 1px 0 rgba(232,232,240,.04);
+}
+.glass-p.active,
+.glass-p:focus-within {
+  border-color: rgba(156,61,187,.32);
+  box-shadow:
+    0 0 0 0.5px rgba(156,61,187,.18),
+    0 0 28px rgba(156,61,187,.10),
+    0 8px 32px rgba(0,0,0,.50),
+    inset 0 0 40px rgba(156,61,187,.04),
+    inset 0 1px 0 rgba(232,232,240,.06);
+}
+
+/* Tier 3 — modal */
+.glass-m {
+  background: rgba(7,7,9,.65);
+  backdrop-filter: blur(40px) saturate(150%);
+  -webkit-backdrop-filter: blur(40px) saturate(150%);
+  border: 1px solid rgba(156,61,187,.18);
+  box-shadow:
+    0 0 0 0.5px rgba(156,61,187,.10),
+    0 24px 64px rgba(0,0,0,.65),
+    inset 0 1px 0 rgba(232,232,240,.06);
+}
+
+/* Input inside glass — NO backdrop-filter (causes artifacts) */
+.glass-input {
+  background: rgba(156,61,187,.05);
+  border: 1px solid rgba(156,61,187,.10);
+  color: var(--br);
+  font-family: var(--fm);
+  font-size: .88rem;
+  letter-spacing: .04em;
+  padding: .68rem 1rem;
+  outline: none;
+  width: 100%;
+  transition:
+    border-color 120ms var(--ease-std),
+    box-shadow   120ms var(--ease-std);
+}
+.glass-input::placeholder { color: var(--dim); opacity: .38; }
+.glass-input:focus {
+  border-color: rgba(156,61,187,.35);
+  box-shadow: 0 0 0 3px rgba(156,61,187,.08);
+}
+
+/* Fallback — browsers without backdrop-filter */
+@supports not (backdrop-filter: blur(1px)) {
+  .glass-s { background: rgba(14,10,20,.85); }
+  .glass-p { background: rgba(10,8,16,.92);  }
+  .glass-m { background: rgba(8,6,14,.96);   }
+}
+
+/* ════════════════════════════════════════════════════════
+   TYPOGRAPHY SCALE
+
+   Cinzel — display only
+   Electrolize — everything else
+
+   Never bold. Never two adjacent elements within 4px of same size.
+════════════════════════════════════════════════════════ */
+
+/* Cinzel — display roles */
+.t-display {
+  font-family: var(--fd);
+  font-weight: 400;
+  font-size: clamp(3rem,8vw,5rem);
+  letter-spacing: .14em;
+  color: var(--br);
+  line-height: .9;
+}
+.t-section {
+  font-family: var(--fd);
+  font-weight: 400;
+  font-size: 2.2rem;
+  letter-spacing: .10em;
+  color: var(--br);
+  line-height: 1;
+}
+.t-sub {
+  font-family: var(--fd);
+  font-weight: 400;
+  font-size: 1.6rem;
+  letter-spacing: .08em;
+  color: var(--br);
+  line-height: 1.1;
+}
+
+/* Electrolize — all functional text */
+.t-eyebrow {
+  font-family: var(--fm);
+  font-size: .72rem;
+  letter-spacing: .52em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+.t-btn-text {
+  font-family: var(--fm);
+  font-size: .76rem;
+  letter-spacing: .34em;
+  text-transform: uppercase;
+}
+.t-body {
+  font-family: var(--fb);
+  font-size: .88rem;
+  letter-spacing: .04em;
+  color: var(--bd);
+  line-height: 1.7;
+}
+.t-emphasis {
+  font-family: var(--fb);
+  font-size: 1rem;
+  letter-spacing: .02em;
+  color: var(--br);
+  line-height: 1.6;
+}
+.t-mono {
+  font-family: var(--fm);
+  font-size: .82rem;
+  letter-spacing: .04em;
+  color: var(--bd);
+}
+.t-label {
+  font-family: var(--fm);
+  font-size: .6rem;
+  letter-spacing: .44em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+/* ════════════════════════════════════════════════════════
+   BUTTONS — full architecture from decision section
+
+   Structure:
+     <button class="btn btn-primary">
+       <div class="btn-pulse-ring"></div>
+       <div class="btn-inner">
+         <div class="glass-sheen"></div>
+         <span>LABEL</span>
+       </div>
+     </button>
+
+   .btn-primary  violet — primary / CTA
+   .btn-white    white  — secondary
+   .btn-warn     red    — destructive / high price impact
+
+   Scan entrance: add .btn-scanning to parent container,
+   JS injects .btn-scan into .btn-inner, strips animation after done.
+════════════════════════════════════════════════════════ */
+
+/* ── Outer shell — no visual, just layout + positioning ── */
+.btn {
+  font-family: var(--fm);
+  font-size: .76rem;
+  letter-spacing: .40em;
+  text-transform: uppercase;
+  padding: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  display: inline-flex;
+  cursor: none;
+  position: relative;
+}
+.btn:disabled { opacity: .28; pointer-events: none; }
+
+/* ── Inner — the visual surface ── */
+.btn-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px clamp(20px,5vw,52px);
+  min-width: clamp(140px,36vw,240px);
+  position: relative;
+  overflow: hidden;
+  transition:
+    border-color 300ms var(--ease-std),
+    box-shadow   400ms var(--ease-std);
+}
+
+/* Left accent bar — scaleY(0) → scaleY(1) on hover */
+.btn-inner::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  transform: scaleY(0);
+  transform-origin: bottom;
+  transition: transform 300ms var(--ease-spr);
+}
+
+/* Text sits above all pseudo layers */
+.btn-inner span {
+  position: relative;
+  z-index: 3;
+}
+
+/* ── Glass sheen — diagonal highlight sweeps on hover ── */
+.glass-sheen {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 55%;
+  background: linear-gradient(
+    115deg,
+    transparent 25%,
+    rgba(255,255,255,.13) 48%,
+    transparent 72%
+  );
+  transform: translateX(-160%) skewX(-15deg);
+  transition: transform 700ms var(--ease-spr);
+  z-index: 1;
+  pointer-events: none;
+  will-change: transform;
+}
+.btn:hover .glass-sheen { transform: translateX(160%) skewX(-15deg); }
+
+/* ── Pulse rings — breathing outward rings around button ── */
+.btn-pulse-ring {
+  position: absolute;
+  inset: -6px;
+  pointer-events: none;
+  z-index: 0;
+}
+.btn-pulse-ring::before,
+.btn-pulse-ring::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid transparent;
+}
+
+/* ── Scan bar — injected by JS on entrance ── */
+.btn-scan {
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  height: 2px;
+  pointer-events: none;
+  z-index: 4;
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+/* ════ PRIMARY — violet ════ */
+.btn-primary .btn-inner {
+  background: rgba(156,61,187,.06);
+  color: var(--br);
+  border: 1px solid var(--em);
+}
+.btn-primary .btn-inner::before {
+  background: rgba(190,128,220,.22);
+  z-index: 2;
+}
+/* Fill gradient sweeps bottom → top on hover */
+.btn-primary .btn-inner::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    155deg,
+    rgba(180,60,220,.28)  0%,
+    rgba(156,61,187,.16) 35%,
+    rgba(156,61,187,.22) 65%,
+    rgba(100,20,150,.30) 100%
+  );
+  transform: translateY(101%);
+  transition: transform 400ms var(--ease-spr);
+  z-index: 0;
+}
+.btn-primary:hover .btn-inner {
+  border-color: var(--em);
+  box-shadow:
+    0 0 40px rgba(156,61,187,.45),
+    0 0 80px rgba(156,61,187,.18);
+}
+.btn-primary:hover .btn-inner::before { transform: scaleY(1); }
+.btn-primary:hover .btn-inner::after  { transform: translateY(0); }
+.btn-primary:active .btn-inner        { transform: scale(.97); }
+
+/* Violet pulse rings */
+.btn-primary .btn-pulse-ring::before {
+  border-color: rgba(156,61,187,.70);
+  animation: pulse-sweep-violet 2.4s var(--ease-std) infinite;
+}
+.btn-primary .btn-pulse-ring::after {
+  border-color: rgba(156,61,187,.35);
+  animation: pulse-sweep-violet 2.4s var(--ease-std) infinite 1.2s;
+}
+@keyframes pulse-sweep-violet {
+  0%   { opacity: 0; transform: scale(1); }
+  20%  { opacity: 1; }
+  100% { opacity: 0; transform: scale(1.08); border-color: rgba(156,61,187,0); }
+}
+
+/* Violet scan bar */
+.btn-primary .btn-scan {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(156,61,187,.6) 20%,
+    rgba(190,128,220,1) 50%,
+    rgba(156,61,187,.6) 80%,
+    transparent 100%
+  );
+  box-shadow:
+    0 0 10px rgba(156,61,187,.9),
+    0 0 24px rgba(156,61,187,.5),
+    0 2px 8px rgba(156,61,187,.4);
+}
+
+/* ════ GHOST — white ════ */
+.btn-white .btn-inner {
+  background: rgba(156,61,187,.04);
+  color: rgba(222,228,244,.65);
+  border: 1px solid rgba(222,228,244,.20);
+}
+.btn-white .btn-inner::before {
+  background: rgba(222,228,244,.40);
+  z-index: 2;
+}
+.btn-white .btn-inner::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    155deg,
+    rgba(255,255,255,.22)    0%,
+    rgba(222,228,244,.12)   35%,
+    rgba(222,228,244,.16)   65%,
+    rgba(200,206,220,.20)  100%
+  );
+  transform: translateY(101%);
+  transition: transform 400ms var(--ease-spr);
+  z-index: 0;
+}
+.btn-white .btn-inner span {
+  color: rgba(222,228,244,.65);
+  transition: color 250ms var(--ease-std);
+}
+.btn-white:hover .btn-inner {
+  border-color: rgba(222,228,244,.80);
+  box-shadow:
+    0 0 28px rgba(222,228,244,.22),
+    0 0 55px rgba(222,228,244,.08);
+}
+.btn-white:hover .btn-inner span  { color: var(--br); }
+.btn-white:hover .btn-inner::before { transform: scaleY(1); }
+.btn-white:hover .btn-inner::after  { transform: translateY(0); }
+.btn-white:active .btn-inner        { transform: scale(.97); }
+
+/* White pulse rings */
+.btn-white .btn-pulse-ring::before {
+  border-color: rgba(222,228,244,.50);
+  animation: pulse-sweep-white 2.4s var(--ease-std) infinite;
+}
+.btn-white .btn-pulse-ring::after {
+  border-color: rgba(222,228,244,.22);
+  animation: pulse-sweep-white 2.4s var(--ease-std) infinite 1.2s;
+}
+@keyframes pulse-sweep-white {
+  0%   { opacity: 0; transform: scale(1); }
+  20%  { opacity: 1; }
+  100% { opacity: 0; transform: scale(1.08); border-color: rgba(222,228,244,0); }
+}
+
+/* White scan bar */
+.btn-white .btn-scan {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(200,206,220,.6) 20%,
+    rgba(222,228,244,1)  50%,
+    rgba(200,206,220,.6) 80%,
+    transparent 100%
+  );
+  box-shadow:
+    0 0 10px rgba(222,228,244,.7),
+    0 0 24px rgba(222,228,244,.35),
+    0 2px 8px rgba(222,228,244,.3);
+}
+
+/* ════ WARN — red ════ */
+.btn-warn .btn-inner {
+  background: rgba(220,80,80,.05);
+  color: var(--dn);
+  border: 1px solid rgba(220,80,80,.40);
+}
+.btn-warn .btn-inner::before { background: rgba(220,80,80,.30); z-index: 2; }
+.btn-warn .btn-inner::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    155deg,
+    rgba(220,80,80,.22)  0%,
+    rgba(180,40,40,.12) 35%,
+    rgba(180,40,40,.16) 65%,
+    rgba(140,20,20,.20) 100%
+  );
+  transform: translateY(101%);
+  transition: transform 400ms var(--ease-spr);
+  z-index: 0;
+}
+.btn-warn:hover .btn-inner {
+  border-color: var(--dn);
+  box-shadow: 0 0 28px rgba(220,80,80,.28);
+}
+.btn-warn:hover .btn-inner::before { transform: scaleY(1); }
+.btn-warn:hover .btn-inner::after  { transform: translateY(0); }
+.btn-warn:active .btn-inner        { transform: scale(.97); }
+
+/* ════ SCAN ENTRANCE — shared keyframes ════ */
+/* Container gets .btn-scanning class to trigger */
+.btn-scanning .btn-scan {
+  animation: btn-scan-sweep 3.5s var(--ease-std) forwards;
+}
+@keyframes btn-scan-sweep {
+  0%,15%   { opacity: 0; transform: translateY(0); }
+  17%      { opacity: 1; transform: translateY(0); }
+  56%      { opacity: 0.7; transform: translateY(calc(100% + 60px)); }
+  57%,100% { opacity: 0;   transform: translateY(calc(100% + 60px)); }
+}
+
+@keyframes btn-entrance {
+  0%   { opacity: 0; }
+  16%  { opacity: 1; }
+  100% { opacity: 1; }
+}
+
+/* Violet entrance glow */
+@keyframes btn-glow-violet {
+  0%,16% { box-shadow: none; }
+  55%    { box-shadow: 0 0 0 1px rgba(156,61,187,.9), 0 0 22px rgba(156,61,187,.9), 0 0 50px rgba(156,61,187,.55), 0 0 90px rgba(156,61,187,.25); }
+  75%    { box-shadow: 0 0 0 1px rgba(156,61,187,.9), 0 0 22px rgba(156,61,187,.9), 0 0 50px rgba(156,61,187,.55), 0 0 90px rgba(156,61,187,.25); }
+  100%   { box-shadow: none; }
+}
+/* Violet fill entrance */
+@keyframes btn-fill-violet {
+  0%,16%  { background: transparent; color: transparent; border-color: var(--em); }
+  56%     { background: transparent; color: transparent; }
+  100%    { background: rgba(156,61,187,.06); color: var(--br); }
+}
+
+/* White entrance glow */
+@keyframes btn-glow-white {
+  0%,16% { box-shadow: none; }
+  55%    { box-shadow: 0 0 0 1px rgba(222,228,244,.9), 0 0 22px rgba(222,228,244,.7), 0 0 50px rgba(222,228,244,.35), 0 0 90px rgba(222,228,244,.12); }
+  75%    { box-shadow: 0 0 0 1px rgba(222,228,244,.9), 0 0 22px rgba(222,228,244,.7), 0 0 50px rgba(222,228,244,.35), 0 0 90px rgba(222,228,244,.12); }
+  100%   { box-shadow: none; }
+}
+/* Ghost text reveal */
+@keyframes btn-white-reveal {
+  0%,56%  { opacity: 0; }
+  100%    { opacity: 1; }
+}
+
+/* ── Full-width modifier ── */
+.btn-full          { width: 100%; }
+.btn-full .btn-inner { width: 100%; min-width: 0; }
+
+/* ── Confirm state — destructive, 2s timeout ── */
+.btn.confirm .btn-inner {
+  border-color: rgba(220,80,80,.60) !important;
+  color: var(--dn) !important;
+  background: rgba(220,80,80,.05) !important;
+}
+
+/* ════════════════════════════════════════════════════════
+   SKELETON — never spinners
+   Shimmer via ::after transform — compositor-only, zero paint.
+   background-position animation replaced: caused repaint
+   every frame while skeletons were on screen.
+════════════════════════════════════════════════════════ */
+.skeleton {
+  background: var(--trace);
+  border-radius: 2px;
+  position: relative;
+  overflow: hidden;
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent              0%,
+    rgba(156,61,187,.10)    50%,
+    transparent             100%
+  );
+  transform: translateX(-100%);
+  animation: skeleton-sweep 1.8s var(--ease-std) infinite;
+  will-change: transform;
+}
+@keyframes skeleton-sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(200%); }
+}
+
+/* Skeleton line helpers */
+.skel-line        { height: .75em; border-radius: 2px; }
+.skel-line + .skel-line { margin-top: .44em; }
+.skel-w-80 { width: 80%; }
+.skel-w-60 { width: 60%; }
+.skel-w-40 { width: 40%; }
+
+/* ════════════════════════════════════════════════════════
+   SHAKE — error state
+════════════════════════════════════════════════════════ */
+@keyframes shake {
+  0%,100% { transform: translateX(0);   }
+  20%     { transform: translateX(-5px);}
+  40%     { transform: translateX( 5px);}
+  60%     { transform: translateX(-3px);}
+  80%     { transform: translateX( 3px);}
+}
+.shake { animation: shake 380ms var(--ease-std); }
+
+/* ════════════════════════════════════════════════════════
+   KEYFRAMES — status, flash, entry
+════════════════════════════════════════════════════════ */
+@keyframes blink {
+  0%,100% { opacity: 1;  }
+  50%     { opacity: .2; }
+}
+
+@keyframes stat-flash {
+  0%   {
+    background: rgba(156,61,187,.28);
+    box-shadow: inset 0 0 32px rgba(156,61,187,.18);
+  }
+  55%  {
+    background: rgba(156,61,187,.06);
+    box-shadow: inset 0 1px 0 rgba(156,61,187,.08);
+  }
+  100% { background: transparent; box-shadow: none; }
+}
+@keyframes num-flash {
+  0%   {
+    color: rgba(255,255,255,.97);
+    text-shadow: 0 0 28px rgba(156,61,187,.9), 0 0 56px rgba(156,61,187,.3);
+  }
+  40%  { color: var(--em); text-shadow: 0 0 10px rgba(156,61,187,.4); }
+  100% { color: var(--em); text-shadow: none; }
+}
+.stat-flash { animation: stat-flash 1.9s var(--ease-spr); }
+.num-flash  { animation: num-flash  1.9s var(--ease-spr); }
+
+@keyframes row-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes checkmark-draw {
+  from { stroke-dashoffset: 60; }
+  to   { stroke-dashoffset: 0;  }
+}
+
+/* ════════════════════════════════════════════════════════
+   VIEW TRANSITIONS — cinematic, never cuts
+
+   EXIT  200ms ease-in  (accelerate out)
+   ENTER 280ms ease-out (decelerate in)
+════════════════════════════════════════════════════════ */
+.view { will-change: opacity, transform; }
+.view.leaving {
+  opacity: 0;
+  transform: translateY(6px);
+  transition:
+    opacity   200ms var(--ease-in),
+    transform 200ms var(--ease-in);
+  pointer-events: none;
+}
+.view.entering {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity   280ms var(--ease-out),
+    transform 280ms var(--ease-out);
+}
+
+/* ════════════════════════════════════════════════════════
+   PANEL CONTENT TRANSITIONS — right panel, desktop
+
+   Content fades out (160ms), new content fades in (240ms).
+   Never a cut.
+════════════════════════════════════════════════════════ */
+.panel-content { will-change: opacity; }
+.panel-content.leaving {
+  opacity: 0;
+  transition: opacity 160ms var(--ease-in);
+  pointer-events: none;
+}
+.panel-content.entering {
+  opacity: 1;
+  transition: opacity 240ms var(--ease-out);
+}
+
+/* ════════════════════════════════════════════════════════
+   PANEL ENTRANCE
+   Desktop: slides from right
+   Mobile:  slides from bottom
+════════════════════════════════════════════════════════ */
+.panel-enter-desktop {
+  transform: translateX(100%);
+  transition: transform 320ms var(--ease-out);
+}
+.panel-enter-mobile {
+  transform: translateY(100%);
+  transition: transform 320ms var(--ease-out);
+}
+.panel-visible { transform: translate(0,0); }
+
+/* ════════════════════════════════════════════════════════
+   FOCUS STATES
+════════════════════════════════════════════════════════ */
+*:focus          { outline: none; }
+*:focus-visible  {
+  outline: 1.5px solid rgba(156,61,187,.50);
+  outline-offset: 3px;
+}
+
+/* ════════════════════════════════════════════════════════
+   SCROLLBARS
+════════════════════════════════════════════════════════ */
+::-webkit-scrollbar       { width: 2px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--em-lo); border-radius: 1px; }
+
+/* ════════════════════════════════════════════════════════
+   TOKEN ROW — hover: left violet accent slides in
+════════════════════════════════════════════════════════ */
+.token-row {
+  position: relative;
+  border-bottom: 1px solid var(--trace);
+  transition: background 140ms var(--ease-std);
+  cursor: none;
+}
+.token-row::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background: var(--em);
+  transform: scaleY(0);
+  transform-origin: center;
+  transition: transform 160ms var(--ease-spr);
+}
+.token-row:hover              { background: var(--hi); }
+.token-row:hover::before      { transform: scaleY(1); }
+.token-row.active             { background: var(--em-dim); }
+.token-row.active::before     { transform: scaleY(1); }
+.token-row.new                { animation: row-in 400ms var(--ease-spr); }
+
+/* ════════════════════════════════════════════════════════
+   STATUS DOT
+════════════════════════════════════════════════════════ */
+.sdot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--dim);
+  flex-shrink: 0;
+  transition: background 300ms var(--ease-std);
+}
+.sdot.live {
+  background: var(--em);
+  animation: blink 2s var(--ease-std) infinite;
+}
+
+/* ════════════════════════════════════════════════════════
+   TOGGLE SWITCH
+   Thumb slides 200ms ease-spr. Track color 200ms ease-std.
+════════════════════════════════════════════════════════ */
+.toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+  cursor: none;
+}
+.toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+.toggle-track {
+  position: absolute;
+  inset: 0;
+  background: rgba(156,61,187,.08);
+  border: 1px solid rgba(156,61,187,.18);
+  border-radius: 11px;
+  transition:
+    background   200ms var(--ease-std),
+    border-color 200ms var(--ease-std);
+}
+.toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--dim);
+  transition:
+    transform  200ms var(--ease-spr),
+    background 200ms var(--ease-std);
+  pointer-events: none;
+}
+.toggle input:checked ~ .toggle-track {
+  background: rgba(156,61,187,.22);
+  border-color: var(--em-lo);
+}
+.toggle input:checked ~ .toggle-thumb {
+  transform: translateX(18px);
+  background: var(--em);
+}
+.toggle.disabled {
+  opacity: .28;
+  pointer-events: none;
+}
+
+/* ════════════════════════════════════════════════════════
+   SEGMENT CONTROL
+   Active indicator slides between segments.
+   transition: left 220ms ease-spr.
+════════════════════════════════════════════════════════ */
+.seg-control {
+  position: relative;
+  display: inline-flex;
+  background: rgba(156,61,187,.04);
+  border: 1px solid rgba(156,61,187,.10);
+  border-radius: 2px;
+  padding: 3px;
+}
+.seg-indicator {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  height: calc(100% - 6px);
+  background: rgba(156,61,187,.18);
+  border: 1px solid var(--em-lo);
+  border-radius: 1px;
+  transition:
+    left   220ms var(--ease-spr),
+    width  220ms var(--ease-spr);
+  pointer-events: none;
+  z-index: 0;
+}
+.seg-btn {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  border: none;
+  color: var(--dim);
+  font-family: var(--fm);
+  font-size: .66rem;
+  letter-spacing: .34em;
+  text-transform: uppercase;
+  padding: .42rem 1rem;
+  cursor: none;
+  transition: color 160ms var(--ease-std);
+  white-space: nowrap;
+}
+.seg-btn.active        { color: var(--br); }
+.seg-btn:hover:not(.active) { color: var(--bd); }
+
+/* ════════════════════════════════════════════════════════
+   TOAST
+════════════════════════════════════════════════════════ */
+#toast-wrap {
+  position: fixed;
+  top: 1.4rem;
+  right: 1.4rem;
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  pointer-events: none;
+  max-width: 380px;
+}
+.toast {
+  background: var(--void);
+  border: 1px solid var(--trace);
+  padding: .76rem 1.1rem;
+  font-family: var(--fm);
+  font-size: .72rem;
+  letter-spacing: .02em;
+  color: var(--bd);
+  pointer-events: all;
+  animation: toast-in 280ms var(--ease-spr);
+  line-height: 1.55;
+  transition: opacity 300ms var(--ease-std);
+}
+.toast.tok    { border-color: rgba(156,61,187,.44); color: var(--em-2); }
+.toast.tok-ok { border-color: rgba(80,200,140,.44);  color: var(--up);   }
+.toast.terr   { border-color: rgba(220,60,60,.44);   color: var(--dn);   }
+.toast-lnk {
+  color: var(--em-2);
+  text-decoration: none;
+  margin-left: .55rem;
+  opacity: .7;
+  cursor: none;
+  transition: opacity 120ms var(--ease-std);
+}
+.toast-lnk:hover { opacity: 1; }
+
+/* ════════════════════════════════════════════════════════
+   SEMANTIC COLOR HELPERS
+════════════════════════════════════════════════════════ */
+.c-up   { color: var(--up);   }
+.c-dn   { color: var(--dn);   }
+.c-warn { color: var(--warn); }
+.c-em   { color: var(--em);   }
+.c-em2  { color: var(--em-2); }
+.c-br   { color: var(--br);   }
+.c-bd   { color: var(--bd);   }
+.c-dim  { color: var(--dim);  }
+
+/* ════════════════════════════════════════════════════════
+   SHARED COMPONENT — SECTION LABEL
+════════════════════════════════════════════════════════ */
+.section-label {
+  font-family: var(--fm);
+  font-size: .62rem;
+  letter-spacing: .56em;
+  color: var(--dim);
+  text-transform: uppercase;
+  margin-bottom: .65rem;
+}
+
+/* ════════════════════════════════════════════════════════
+   SHARED COMPONENT — DIVIDER
+════════════════════════════════════════════════════════ */
+.divider {
+  width: 100%;
+  height: 1px;
+  background: var(--trace);
+}
+
+/* ════════════════════════════════════════════════════════
+   SHARED COMPONENT — BADGE
+════════════════════════════════════════════════════════ */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: .18rem .52rem;
+  font-family: var(--fm);
+  font-size: .54rem;
+  letter-spacing: .28em;
+  text-transform: uppercase;
+  border: 1px solid var(--em-lo);
+  color: var(--em-2);
+  border-radius: 1px;
+}
+.badge.verified {
+  border-color: rgba(80,200,140,.32);
+  color: var(--up);
+}
+
+/* ════════════════════════════════════════════════════════
+   SHARED COMPONENT — EMPTY STATE
+   Never blank. Always has content.
+════════════════════════════════════════════════════════ */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-6) var(--sp-4);
+  gap: var(--sp-3);
+  text-align: center;
+}
+.empty-state-label {
+  font-family: var(--fm);
+  font-size: .68rem;
+  letter-spacing: .44em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+/* ════════════════════════════════════════════════════════
+   SHARED COMPONENT — ERROR STATE
+════════════════════════════════════════════════════════ */
+.error-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: .6rem .75rem;
+  font-family: var(--fm);
+  font-size: .7rem;
+  letter-spacing: .04em;
+  color: var(--dn);
+  border-left: 2px solid var(--dn);
+  background: rgba(220,80,80,.04);
+}
+
+/* ════════════════════════════════════════════════════════
+   SHARED COMPONENT — PRICE IMPACT WARNING
+════════════════════════════════════════════════════════ */
+.impact-row {
+  padding: .5rem .75rem;
+  font-family: var(--fm);
+  font-size: .7rem;
+  letter-spacing: .04em;
+  border-left: 2px solid var(--warn);
+  color: var(--warn);
+  background: rgba(220,180,40,.05);
+  transition: opacity 200ms var(--ease-std);
+}
+.impact-row.crit {
+  border-color: var(--dn);
+  color: var(--dn);
+  background: rgba(220,80,80,.05);
+}
+
+/* ════════════════════════════════════════════════════════
+   SHARED COMPONENT — SETTINGS ROW
+════════════════════════════════════════════════════════ */
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: .9rem 0;
+  border-bottom: 1px solid var(--trace);
+}
+.settings-row:last-child { border-bottom: none; }
+
+.settings-row-info { display: flex; flex-direction: column; gap: .22rem; }
+.settings-row-label {
+  font-family: var(--fm);
+  font-size: .76rem;
+  letter-spacing: .04em;
+  color: var(--bd);
+}
+.settings-row-desc {
+  font-family: var(--fm);
+  font-size: .64rem;
+  letter-spacing: .02em;
+  color: var(--dim);
+  line-height: 1.55;
+}
+
+/* ════════════════════════════════════════════════════════
+   SHARED COMPONENT — NAV ITEM (sidebar)
+════════════════════════════════════════════════════════ */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: .62rem .75rem;
+  font-family: var(--fm);
+  font-size: .72rem;
+  letter-spacing: .26em;
+  text-transform: uppercase;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  cursor: none;
+  position: relative;
+  transition: background 140ms var(--ease-std), color 140ms var(--ease-std);
+}
+.nav-item::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background: var(--em);
+  transform: scaleY(0);
+  transform-origin: center;
+  transition: transform 160ms var(--ease-spr);
+}
+.nav-item:hover {
+  background: var(--hi);
+  color: var(--bd);
+}
+.nav-item.active {
+  color: var(--em);
+}
+.nav-item.active::before { transform: scaleY(1); }
+
+/* ════════════════════════════════════════════════════════
+   REDUCED MOTION
+════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  .ph, .sph {
+    transition: none !important;
+    opacity: 1 !important;
+  }
+  .skeleton {
+    animation: none !important;
+    background: var(--trace);
+  }
+  .sdot.live        { animation: none !important; }
+  .view.leaving,
+  .view.entering    { transition: none !important; }
+  .panel-content.leaving,
+  .panel-content.entering { transition: none !important; }
+  .toggle-thumb     { transition: transform 0ms, background 0ms !important; }
+  .seg-indicator    { transition: none !important; }
+}
+
+/* ════════════════════════════════════════════════════════
+   MOBILE — primary-touch device detection
+   Matches hover:none + pointer:coarse — excludes touch laptops
+════════════════════════════════════════════════════════ */
+@media (hover: none) and (pointer: coarse) {
+  #cur { display: none; }
+  body, button, .token-row, .nav-item { cursor: auto !important; }
+  .glass-input, .btn, .btn-primary, .btn-warn,
+  .seg-btn, .toggle { cursor: auto; }
+
+  /* Cap blur — performance */
+  .glass-p {
+    backdrop-filter: blur(16px) saturate(120%);
+    -webkit-backdrop-filter: blur(16px) saturate(120%);
+  }
+  .glass-m {
+    backdrop-filter: blur(24px) saturate(130%);
+    -webkit-backdrop-filter: blur(24px) saturate(130%);
+  }
+}
