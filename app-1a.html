@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OBSIDEUM</title>
+  <link rel="stylesheet" href="core.css">
+  <!-- ethers@5.7 — required by wallet.js before wallet.js loads -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+  <style>
+    /* ── Canvas — always behind, fixed, full screen ── */
+    #crystal-canvas,
+    #particle-canvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* ── Desktop grid ── */
+    .app-desktop {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .content-area {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      overflow: hidden;
+    }
+
+    .markets-layout { display: contents; }
+
+    .token-list-col {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-right: 1px solid var(--trace);
+    }
+
+    .token-list { flex: 1; overflow-y: auto; }
+
+    .right-panel { overflow: hidden; min-width: 360px; }
+
+    .settings-layout {
+      grid-column: 1 / -1;
+      overflow-y: auto;
+    }
+
+    /* ── Sidebar layout ── */
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    .sidebar-wordmark {
+      font-family: var(--fd);
+      font-weight: 400;
+      font-size: .92rem;
+      letter-spacing: .20em;
+      color: var(--br);
+      padding: var(--sp-4) var(--sp-3) var(--sp-5);
+      flex-shrink: 0;
+    }
+
+    .sidebar-nav {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .sidebar-bottom {
+      flex-shrink: 0;
+      border-top: 1px solid var(--trace);
+    }
+
+    .sidebar-wallet {
+      font-family: var(--fm);
+      font-size: .70rem;
+      letter-spacing: .04em;
+      color: var(--dim);
+      padding: var(--sp-3) var(--sp-3) var(--sp-1);
+      min-height: 18px;
+      transition: opacity 100ms var(--ease-std);
+    }
+
+    .sidebar-network {
+      font-family: var(--fm);
+      font-size: .58rem;
+      letter-spacing: .10em;
+      color: var(--dim);
+      text-transform: uppercase;
+      padding: 0 var(--sp-3) var(--sp-2);
+      min-height: 14px;
+      transition: color 140ms var(--ease-std);
+    }
+
+    .nav-item--settings {
+      background: transparent;
+      border: none;
+      width: 100%;
+      text-align: left;
+    }
+
+    .nav-gear { flex-shrink: 0; }
+
+    /* ── Button resets missing from core.css .nav-item ── */
+    .nav-item {
+      background: transparent;
+      border: none;
+    }
+
+    /* ── Search bar ── */
+    .search-wrap {
+      padding: var(--sp-3);
+      border-bottom: 1px solid var(--trace);
+      flex-shrink: 0;
+    }
+
+    /* ── Right panel — content + transitions ── */
+    .panel-content {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      transition: opacity 160ms var(--ease-std);
+    }
+
+    .panel-content.leaving  { opacity: 0; }
+
+    .panel-content.entering {
+      animation: panelIn 240ms var(--ease-std) forwards;
+    }
+
+    @keyframes panelIn {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+
+    .panel-null-state {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .panel-null-label {
+      font-family: var(--fm);
+      font-size: .68rem;
+      letter-spacing: .44em;
+      color: var(--dim);
+      text-transform: uppercase;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 767px) {
+      .app-desktop { display: none; }
+      .app-mobile {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        position: relative;
+        z-index: 1;
+      }
+    }
+    @media (min-width: 768px) {
+      .app-desktop { display: grid; }
+      .app-mobile  { display: none; }
+    }
+
+    /* ── Mobile layout ── */
+    .mobile-top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--sp-3);
+      height: 56px;
+      flex-shrink: 0;
+      position: relative;
+      border-bottom: 1px solid var(--trace);
+    }
+
+    .mobile-content {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .mobile-view {
+      position: absolute;
+      inset: 0;
+      overflow-y: auto;
+    }
+
+    .mobile-bottom-nav {
+      display: flex;
+      height: 60px;
+      flex-shrink: 0;
+      border-top: 1px solid var(--trace);
+    }
+
+    /* Mobile wordmark — centered absolutely over the flex row */
+    .mobile-wordmark {
+      font-family: var(--fd);
+      font-weight: 400;
+      font-size: .80rem;
+      letter-spacing: .18em;
+      color: var(--br);
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    /* Mobile back button */
+    .mobile-back {
+      background: transparent;
+      border: none;
+      color: var(--dim);
+      cursor: none;
+      min-width: 44px;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: color 140ms var(--ease-std);
+    }
+    .mobile-back:hover { color: var(--bd); }
+
+    /* Mobile top-right action cluster */
+    .mobile-top-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--sp-1);
+      flex-shrink: 0;
+    }
+
+    /* Mobile icon buttons */
+    .mobile-icon-btn {
+      background: transparent;
+      border: none;
+      color: var(--dim);
+      cursor: none;
+      min-width: 44px;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 140ms var(--ease-std);
+    }
+    .mobile-icon-btn:hover { color: var(--bd); }
+
+    /* Mobile bottom nav items */
+    .mobile-nav-item {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      font-family: var(--fm);
+      font-size: .64rem;
+      letter-spacing: .34em;
+      text-transform: uppercase;
+      color: var(--dim);
+      cursor: none;
+      position: relative;
+      transition: color 140ms var(--ease-std);
+    }
+    .mobile-nav-item::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%) scaleX(0);
+      width: 32px;
+      height: 2px;
+      background: var(--em);
+      transition: transform 200ms var(--ease-spr);
+      transform-origin: center;
+    }
+    .mobile-nav-item.active             { color: var(--em-2); }
+    .mobile-nav-item.active::after      { transform: translateX(-50%) scaleX(1); }
+    .mobile-nav-item:hover:not(.active) { color: var(--bd); }
+  </style>
+</head>
+<body>
+
+<!-- Custom cursor — desktop only; hidden on mobile via core.css -->
+<div id="cur"></div>
+
+<!-- Toast container -->
+<div id="toast-wrap"></div>
+
+<!-- Canvas layers — always behind everything -->
+<canvas id="crystal-canvas"></canvas>
+<canvas id="particle-canvas"></canvas>
+
+<!-- ── DESKTOP LAYOUT (≥ 768px) ─────────────────────────────────── -->
+<div id="app-desktop" class="app-desktop">
+
+  <!-- Sidebar — 220px fixed, glass-m -->
+  <aside id="sidebar" class="sidebar glass-m">
+    <div class="sidebar-wordmark">OBSIDEUM</div>
+    <nav class="sidebar-nav">
+      <button class="nav-item active" data-view="markets">Markets</button>
+      <button class="nav-item" data-view="swap">Swap</button>
+      <button class="nav-item" data-view="history">History</button>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="sidebar-wallet" id="sidebar-wallet"></div>
+      <div class="sidebar-network" id="sidebar-network"></div>
+      <button class="nav-item nav-item--settings" id="settings-btn">
+        <svg class="nav-gear" viewBox="0 0 24 24" width="16" height="16"
+          fill="none" stroke="currentColor" stroke-width="1.5"
+          stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+    </div>
+  </aside>
+
+  <!-- Content area — everything right of sidebar -->
+  <div id="content-area" class="content-area">
+
+    <!-- Markets layout: token list + right panel -->
+    <div id="markets-layout" class="markets-layout">
+
+      <!-- Token list column — 360px fixed -->
+      <div id="token-list-col" class="token-list-col">
+        <div class="search-wrap">
+          <input class="glass-input token-search" id="token-search"
+            type="text" placeholder="Search tokens..."
+            autocomplete="off" spellcheck="false">
+        </div>
+        <div id="token-list" class="token-list">
+          <!-- Token rows rendered here by Phase 3B -->
+        </div>
+      </div>
+
+      <!-- Right panel — fills remaining width -->
+      <div id="right-panel" class="right-panel glass-m">
+        <div id="right-panel-content" class="panel-content">
+          <div class="panel-null-state" id="panel-null">
+            <span class="panel-null-label">Select a token to begin</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Settings layout — full content area, hidden by default -->
+    <div id="settings-layout" class="settings-layout" hidden>
+      <!-- Settings rendered here by Phase 8A -->
+    </div>
+
+  </div>
+</div>
+
+<!-- ── MOBILE LAYOUT (< 768px) ──────────────────────────────────── -->
+<div id="app-mobile" class="app-mobile">
+
+  <!-- Top bar -->
+  <div id="mobile-top-bar" class="mobile-top-bar">
+    <button id="mobile-back" class="mobile-back" hidden aria-label="Back">
+      <svg viewBox="0 0 20 20" width="20" height="20"
+        fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M12 4l-6 6 6 6"/>
+      </svg>
+    </button>
+    <span class="mobile-wordmark">OBSIDEUM</span>
+    <div class="mobile-top-actions">
+      <button id="mobile-history-btn" class="mobile-icon-btn" aria-label="History">
+        <svg viewBox="0 0 20 20" width="20" height="20"
+          fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="10" cy="10" r="8"/>
+          <path d="M10 6v4l3 3"/>
+        </svg>
+      </button>
+      <button id="mobile-settings-btn" class="mobile-icon-btn" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="20" height="20"
+          fill="none" stroke="currentColor" stroke-width="1.5"
+          stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Mobile views — one visible at a time -->
+  <div id="mobile-content" class="mobile-content">
+    <div id="mobile-markets"  class="mobile-view"><!-- Phase 3B --></div>
+    <div id="mobile-token"    class="mobile-view" hidden><!-- Phase 4C --></div>
+    <div id="mobile-swap"     class="mobile-view" hidden><!-- Phase 5A --></div>
+    <div id="mobile-history"  class="mobile-view" hidden><!-- Phase 5A --></div>
+    <div id="mobile-settings" class="mobile-view" hidden><!-- Phase 8A --></div>
+  </div>
+
+  <!-- Bottom nav — fixed, always visible -->
+  <nav id="mobile-bottom-nav" class="mobile-bottom-nav">
+    <button class="mobile-nav-item active" data-mobile-view="markets">Markets</button>
+    <button class="mobile-nav-item" data-mobile-view="swap">Swap</button>
+  </nav>
+
+</div>
+
+<!-- Scripts — bottom of body, exact order, never reorder -->
+<script src="fx.js"></script>
+<script src="state.js"></script>
+<script src="wallet.js"></script>
+<script src="prices.js"></script>
+<script src="swap.js"></script>
+<script>
+  /* ── showToast — global, available to all scripts ── */
+  function showToast(message, type) {
+    var wrap = document.getElementById('toast-wrap');
+    if (!wrap) return;
+    var el = document.createElement('div');
+    el.className = 'toast' + (type ? ' ' + type : '');
+    el.textContent = message;
+    wrap.appendChild(el);
+    setTimeout(function () {
+      el.style.transition = 'opacity 300ms var(--ease-std)';
+      el.style.opacity = '0';
+      setTimeout(function () {
+        if (el.parentNode) el.parentNode.removeChild(el);
+      }, 300);
+    }, 3200);
+  }
+
+  /* ── Init ── */
+  FX.init(document.getElementById('crystal-canvas'), document.getElementById('particle-canvas'));
+  FX.start();
+  checkExistingConnection();
+</script>
+
+<!-- ── Phase 2C — Navigation wiring ─────────────────────────────── -->
+<script>
+(function () {
+  'use strict';
+
+  /* ── Element cache ── */
+  var marketsLayout  = document.getElementById('markets-layout');
+  var settingsLayout = document.getElementById('settings-layout');
+  var rightContent   = document.getElementById('right-panel-content');
+  var panelNull      = document.getElementById('panel-null');
+  var mobileBack     = document.getElementById('mobile-back');
+  var sidebarWallet  = document.getElementById('sidebar-wallet');
+  var sidebarNetwork = document.getElementById('sidebar-network');
+
+  var mobileViews = {
+    markets:  document.getElementById('mobile-markets'),
+    token:    document.getElementById('mobile-token'),
+    swap:     document.getElementById('mobile-swap'),
+    history:  document.getElementById('mobile-history'),
+    settings: document.getElementById('mobile-settings'),
+  };
+
+  var NETWORK_NAMES = {
+    1: 'Ethereum', 42161: 'Arbitrum One', 8453: 'Base', 10: 'Optimism',
+  };
+
+  /* ── Right panel ──────────────────────────────────────────────── */
+
+  /*
+   * renderPanelContent — Phases 4C / 5A inject real content here.
+   * Phase 2C: manages null state only. Anything non-null hides the null label.
+   */
+  function renderPanelContent(state) {
+    panelNull.hidden = (state !== null);
+  }
+
+  function setRightPanel(state) {
+    rightContent.classList.add('leaving');
+    setTimeout(function () {
+      renderPanelContent(state);
+      rightContent.classList.remove('leaving');
+      void rightContent.offsetWidth; /* force reflow before entering */
+      rightContent.classList.add('entering');
+      setTimeout(function () { rightContent.classList.remove('entering'); }, 240);
+    }, 160);
+  }
+
+  /* ── Desktop view ─────────────────────────────────────────────── */
+
+  function setView(view) {
+    if (view === 'settings') {
+      marketsLayout.style.display = 'none';
+      settingsLayout.hidden = false;
+    } else {
+      marketsLayout.style.display = '';
+      settingsLayout.hidden = true;
+    }
+    updateSidebarActive();
+  }
+
+  /*
+   * Sidebar active state accounts for both STATE.view and STATE.rightPanel.
+   * data-view="markets"  → active when view=markets and rightPanel=null|token
+   * data-view="swap"     → active when view=markets and rightPanel=swap
+   * data-view="history"  → active when view=markets and rightPanel=history
+   */
+  function updateSidebarActive() {
+    var view  = STATE.view;
+    var panel = STATE.rightPanel;
+    document.querySelectorAll('.sidebar-nav .nav-item').forEach(function (btn) {
+      var v = btn.dataset.view;
+      var active =
+        (v === 'markets' && view === 'markets' && (panel === null || panel === 'token')) ||
+        (v === 'swap'    && view === 'markets' && panel === 'swap')   ||
+        (v === 'history' && view === 'markets' && panel === 'history');
+      btn.classList.toggle('active', active);
+    });
+  }
+
+  /* ── Mobile view ──────────────────────────────────────────────── */
+
+  function setMobileView(view) {
+    Object.keys(mobileViews).forEach(function (key) {
+      mobileViews[key].hidden = (key !== view);
+    });
+    /* Back arrow — only visible when drilled into token detail */
+    mobileBack.hidden = (view !== 'token');
+    updateMobileNavActive(view);
+  }
+
+  function updateMobileNavActive(view) {
+    document.querySelectorAll('.mobile-nav-item').forEach(function (btn) {
+      btn.classList.toggle('active', btn.dataset.mobileView === view);
+    });
+  }
+
+  /* Saves previous view before navigating — powers the back arrow */
+  function navigateMobile(view) {
+    setState({ prevMobileView: STATE.mobileView, mobileView: view });
+  }
+
+  /* ── Sidebar wallet + network display ─────────────────────────── */
+
+  function truncateAddress(addr) {
+    return addr ? addr.slice(0, 6) + '...' + addr.slice(-4) : '';
+  }
+
+  /* ── State listeners ──────────────────────────────────────────── */
+
+  document.addEventListener('state:view', function (e) {
+    setView(e.detail);
+  });
+
+  document.addEventListener('state:rightPanel', function (e) {
+    setRightPanel(e.detail);
+    updateSidebarActive(); /* rightPanel change also updates sidebar active */
+  });
+
+  document.addEventListener('state:mobileView', function (e) {
+    setMobileView(e.detail);
+  });
+
+  /* Wallet address — populated by Phase 6A, displayed here */
+  document.addEventListener('state:wallet', function (e) {
+    var addr = e.detail;
+    sidebarWallet.textContent = addr ? truncateAddress(addr) : '';
+    sidebarWallet.style.color = '';
+  });
+
+  /* ENS name — fades in over address when resolved */
+  document.addEventListener('state:ens', function (e) {
+    var ens = e.detail;
+    if (!ens || !STATE.wallet) return;
+    sidebarWallet.style.opacity = '0';
+    setTimeout(function () {
+      sidebarWallet.textContent = ens;
+      sidebarWallet.style.color   = 'var(--em-2)';
+      sidebarWallet.style.opacity = '1';
+    }, 100);
+  });
+
+  /* Network badge — warn if mismatched with defaultNetwork setting */
+  document.addEventListener('state:network', function (e) {
+    var id   = e.detail;
+    var name = NETWORK_NAMES[id] || ('Chain ' + id);
+    sidebarNetwork.textContent = id ? name : '';
+    var wrong = id && STATE.settings.defaultNetwork && id !== STATE.settings.defaultNetwork;
+    sidebarNetwork.style.color = wrong ? 'var(--warn)' : '';
+  });
+
+  /* ── Click bindings ───────────────────────────────────────────── */
+
+  /* Sidebar nav: Markets / Swap / History */
+  document.querySelectorAll('.sidebar-nav .nav-item').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var v = btn.dataset.view;
+      if (v === 'markets') setState({ view: 'markets', rightPanel: null });
+      else if (v === 'swap')    setState({ view: 'markets', rightPanel: 'swap' });
+      else if (v === 'history') setState({ view: 'markets', rightPanel: 'history' });
+    });
+  });
+
+  /* Settings gear — desktop */
+  document.getElementById('settings-btn').addEventListener('click', function () {
+    setState({ view: 'settings' });
+  });
+
+  /* Mobile bottom nav */
+  document.querySelectorAll('.mobile-nav-item').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var view = btn.dataset.mobileView;
+      if (view) navigateMobile(view);
+    });
+  });
+
+  /* Mobile top bar — history + settings */
+  document.getElementById('mobile-history-btn').addEventListener('click', function () {
+    navigateMobile('history');
+  });
+  document.getElementById('mobile-settings-btn').addEventListener('click', function () {
+    navigateMobile('settings');
+  });
+
+  /* Mobile back arrow */
+  mobileBack.addEventListener('click', function () {
+    navigateMobile(STATE.prevMobileView || 'markets');
+  });
+
+  /* ── Init — apply current STATE on load ───────────────────────── */
+  setView(STATE.view            || 'markets');
+  setMobileView(STATE.mobileView || 'markets');
+  setRightPanel(STATE.rightPanel);   /* draws null state immediately */
+
+}());
+</script>
+
+</body>
+</html>
