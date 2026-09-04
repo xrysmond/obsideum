@@ -1,0 +1,1229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OBSIDEUM</title>
+  <link rel="stylesheet" href="core.css">
+  <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+  <style>
+    /* ── Canvas — always behind, fixed, full screen ── */
+    #crystal-canvas,
+    #particle-canvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* ── Desktop grid ── */
+    .app-desktop {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      grid-template-rows: var(--app-h, 100svh);
+      height: var(--app-h, 100svh);
+      overflow: hidden;
+    }
+
+    .content-area {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      overflow: hidden;
+    }
+
+    .markets-layout { display: contents; }
+
+    .token-list-col {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-right: 1px solid var(--trace);
+    }
+
+    .token-list { flex: 1; overflow-y: auto; }
+
+    .right-panel { overflow: hidden; min-width: 360px; }
+
+    .settings-layout {
+      grid-column: 1 / -1;
+      overflow-y: auto;
+    }
+
+    /* ── Sidebar shell ── */
+    .sidebar {
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+    }
+
+    /* ── Sidebar — mobile-pill depth applied to the vertical panel ── */
+    #sidebar {
+      background: rgba(7,7,9,.92);
+      -webkit-backdrop-filter: blur(28px) saturate(160%) brightness(.96);
+      backdrop-filter: blur(28px) saturate(160%) brightness(.96);
+      border: none;
+      border-right: 1px solid rgba(156,61,187,.22);
+      box-shadow:
+        0 0 0 0.5px rgba(156,61,187,.10),
+        inset -1px 0 0 rgba(190,128,220,.08),
+        6px 0 32px -4px  rgba(0,0,0,.60),
+        20px 0 60px -12px rgba(0,0,0,.80);
+    }
+
+    .sidebar-wordmark {
+      font-family: var(--fd);
+      font-weight: 400;
+      font-size: .92rem;
+      letter-spacing: .20em;
+      color: var(--br);
+      padding: var(--sp-4) var(--sp-3) var(--sp-5);
+    }
+
+    /* ── Sidebar nav ── */
+    .sidebar-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      position: relative;
+    }
+
+    .sidebar-nav-indicator {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 2px;
+      height: 46px;
+      background: var(--em-2);
+      box-shadow:
+        0 0 6px 1px rgba(156,61,187,.70),
+        0 0 18px 4px rgba(156,61,187,.30);
+      transition:
+        transform 450ms var(--ease-spr),
+        height    350ms var(--ease-spr);
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .sidebar-nav .nav-item {
+      opacity: .28;
+      color: var(--em-2);
+      padding: .82rem .75rem;
+      transition:
+        opacity    200ms var(--ease-std),
+        background 140ms var(--ease-std),
+        transform  300ms var(--ease-spr);
+    }
+    .sidebar-nav .nav-item::before { display: none; }
+    .sidebar-nav .nav-item.active {
+      opacity: 1;
+      color: var(--em-2);
+      background: transparent;
+    }
+    .sidebar-nav .nav-item:hover:not(.active) {
+      opacity: .55;
+      background: transparent;
+    }
+    .sidebar-nav .nav-item:active {
+      transform: scale(.96);
+      transition: transform 80ms var(--ease-spr);
+    }
+
+    .nav-icon {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      display: block;
+      flex-shrink: 0;
+    }
+
+    .nav-label {
+      font-family: var(--fm);
+      font-size: .64rem;
+      letter-spacing: .26em;
+      text-transform: uppercase;
+      line-height: 1;
+    }
+
+    .nav-item--settings {
+      border-top: 1px solid var(--trace);
+    }
+
+    /* ── Wallet block ── */
+    .sidebar-wallet-block {
+      padding: var(--sp-2) var(--sp-3) var(--sp-3);
+      border-bottom: 1px solid var(--trace);
+    }
+
+    .swb-card {
+      background: rgba(156,61,187,.05);
+      border: 1px solid rgba(156,61,187,.13);
+      box-shadow:
+        inset 0 1px 0 rgba(190,128,220,.07),
+        inset 0 -1px 0 rgba(0,0,0,.18);
+      padding: 9px 10px 8px 12px;
+    }
+
+    .swb-top {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 4px;
+    }
+
+    .swb-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: rgba(156,61,187,.30);
+      transition: background 300ms var(--ease-std), box-shadow 300ms var(--ease-std);
+    }
+    .swb-dot.connected {
+      background: var(--up);
+      box-shadow: 0 0 6px 1px rgba(52,211,153,.50);
+    }
+
+    #sidebar-wallet {
+      font-family: var(--fm);
+      font-size: .62rem;
+      letter-spacing: .05em;
+      color: var(--bd);
+      flex: 1;
+      min-height: 14px;
+      transition: opacity 120ms var(--ease-std);
+    }
+    #sidebar-wallet:empty::before {
+      content: 'no wallet connected';
+      color: var(--dim);
+      font-size: .58rem;
+      letter-spacing: .08em;
+      opacity: .50;
+    }
+
+    #sidebar-network {
+      font-family: var(--fm);
+      font-size: .56rem;
+      letter-spacing: .22em;
+      text-transform: uppercase;
+      color: var(--dim);
+      padding-left: 12px;
+      min-height: 12px;
+      transition: color 140ms var(--ease-std);
+    }
+    #sidebar-network:empty::before {
+      content: '— — —';
+      opacity: .22;
+    }
+
+    /* ── Button resets ── */
+    .nav-item {
+      background: transparent;
+      border: none;
+    }
+
+    .nav-item--settings {
+      background: transparent;
+      border: none;
+      border-top: 1px solid var(--trace);
+      width: 100%;
+      text-align: left;
+    }
+
+    .nav-gear { flex-shrink: 0; }
+
+    /* ── Search bar ── */
+    .search-wrap {
+      padding: var(--sp-3);
+      border-bottom: 1px solid var(--trace);
+      flex-shrink: 0;
+    }
+
+    /* ── Right panel transitions ── */
+    .panel-content {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      transition: opacity 160ms var(--ease-std);
+    }
+
+    .panel-content.leaving  { opacity: 0; }
+
+    .panel-content.entering {
+      animation: panelIn 240ms var(--ease-std) forwards;
+    }
+
+    @keyframes panelIn {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+
+    .panel-null-state {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .panel-null-label {
+      font-family: var(--fm);
+      font-size: .68rem;
+      letter-spacing: .44em;
+      color: var(--dim);
+      text-transform: uppercase;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 767px) {
+      .app-desktop { display: none; }
+      .app-mobile {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        height: 100dvh;
+        position: relative;
+        z-index: 1;
+      }
+    }
+    @media (min-width: 768px) {
+      .app-desktop { display: grid; }
+      .app-mobile  { display: none; }
+    }
+
+    /* ── Mobile layout ── */
+    .mobile-top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--sp-3);
+      height: 56px;
+      flex-shrink: 0;
+      position: relative;
+      border-bottom: 1px solid var(--trace);
+    }
+
+    .mobile-content {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .mobile-view {
+      position: absolute;
+      inset: 0;
+      overflow-y: auto;
+    }
+
+    /* ── Mobile bottom nav — floating glass pill ── */
+    .mobile-bottom-nav {
+      display: flex;
+      height: 62px;
+      flex-shrink: 0;
+      margin: 0 12px calc(env(safe-area-inset-bottom, 0px) + 12px);
+      background: rgba(7,7,9,.92);
+      -webkit-backdrop-filter: blur(28px) saturate(160%) brightness(.96);
+      backdrop-filter: blur(28px) saturate(160%) brightness(.96);
+      border: 1px solid rgba(156,61,187,.22);
+      box-shadow:
+        0 0 0 0.5px rgba(156,61,187,.12),
+        inset 0 1px 0 rgba(190,128,220,.08),
+        0 8px 32px -8px rgba(0,0,0,.6),
+        0 24px 60px -20px rgba(0,0,0,.85);
+      position: relative;
+      z-index: 200;
+    }
+
+    .mobile-nav-indicator {
+      position: absolute;
+      top: -1px;
+      left: 0;
+      height: 2px;
+      width: 50%;
+      background: var(--em-2);
+      box-shadow:
+        0 0 6px 1px rgba(156,61,187,.7),
+        0 0 18px 4px rgba(156,61,187,.3);
+      transition: transform 450ms var(--ease-spr);
+      pointer-events: none;
+    }
+
+    .mobile-wordmark {
+      font-family: var(--fd);
+      font-weight: 400;
+      font-size: .80rem;
+      letter-spacing: .18em;
+      color: var(--br);
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    .mobile-back {
+      background: transparent;
+      border: none;
+      color: var(--dim);
+      cursor: none;
+      min-width: 44px;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: color 140ms var(--ease-std);
+    }
+    .mobile-back:hover { color: var(--bd); }
+
+    .mobile-top-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--sp-1);
+      flex-shrink: 0;
+    }
+
+    .mobile-icon-btn {
+      background: transparent;
+      border: none;
+      color: var(--dim);
+      cursor: none;
+      min-width: 44px;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 140ms var(--ease-std);
+    }
+    .mobile-icon-btn:hover { color: var(--bd); }
+
+    .mobile-nav-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      background: transparent;
+      border: none;
+      opacity: .30;
+      padding: 8px 0;
+      cursor: none;
+      -webkit-user-select: none;
+      user-select: none;
+      transition: opacity 200ms var(--ease-std), transform 300ms var(--ease-spr);
+    }
+    .mobile-nav-item:active              { transform: scale(.92); transition: transform 80ms var(--ease-spr); }
+    .mobile-nav-item.active              { opacity: 1; }
+    .mobile-nav-item:hover:not(.active)  { opacity: .52; }
+
+    .mobile-nav-icon {
+      width: 18px;
+      height: 18px;
+      stroke: var(--em-2);
+      fill: none;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      display: block;
+    }
+
+    .mobile-nav-label {
+      font-family: var(--fm);
+      font-size: 7.5px;
+      letter-spacing: .26em;
+      text-transform: uppercase;
+      color: var(--em-2);
+      line-height: 1;
+    }
+
+    /* ══════════════════════════════════════════════════════════════
+       PHASE 3A — TOKEN ROW COMPONENT
+       All four states: skeleton / loaded / hover / click navigation
+       ══════════════════════════════════════════════════════════════ */
+
+    /* ── Skeleton ── */
+    .skeleton {
+      background: linear-gradient(
+        90deg,
+        var(--trace)              0%,
+        rgba(156,61,187,.08)     50%,
+        var(--trace)             100%
+      );
+      background-size: 200% 100%;
+      animation: skeleton-sweep 1.8s var(--ease-std) infinite;
+      border-radius: 2px;
+    }
+    @keyframes skeleton-sweep {
+      from { background-position: 200% 0; }
+      to   { background-position: -200% 0; }
+    }
+    .token-row--skeleton { pointer-events: none; }
+
+    /* ── Row base ── */
+    .token-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      position: relative;
+      border-bottom: 1px solid var(--trace);
+      cursor: none;
+      -webkit-user-select: none;
+      user-select: none;
+      min-height: 58px;
+      transition: background 140ms var(--ease-std);
+    }
+
+    /* Left violet accent bar — spring-scales on hover */
+    .token-row::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--em);
+      transform: scaleY(0);
+      transform-origin: center;
+      transition: transform 160ms var(--ease-spr);
+      pointer-events: none;
+    }
+
+    .token-row:hover                 { background: var(--hi); }
+    .token-row:hover::before         { transform: scaleY(1); }
+    .token-row:active                { background: var(--em-tr); transition: background 80ms var(--ease-spr); }
+    .token-row:focus-visible         { outline: 1.5px solid rgba(156,61,187,.50); outline-offset: -1.5px; }
+
+    /* ── Logo ── */
+    .token-row-logo {
+      width: 28px;
+      height: 28px;
+      flex-shrink: 0;
+      position: relative;
+    }
+
+    .token-logo {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: block;
+      object-fit: cover;
+    }
+
+    /* Fallback — first letter of symbol, violet circle */
+    .token-logo-fallback {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--em);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--fm);
+      font-size: .64rem;
+      letter-spacing: 0;
+      color: #ffffff;
+      flex-shrink: 0;
+    }
+
+    /* ── Info column ── */
+    .token-row-info {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .token-row-name {
+      font-family: var(--fm);
+      font-size: .80rem;
+      letter-spacing: .02em;
+      color: var(--br);
+      line-height: 1.1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .token-row-symbol {
+      font-family: var(--fm);
+      font-size: .60rem;
+      letter-spacing: .18em;
+      color: var(--em-2);
+      text-transform: uppercase;
+      line-height: 1;
+    }
+
+    .token-row-chain {
+      font-family: var(--fm);
+      font-size: .54rem;
+      letter-spacing: .22em;
+      color: var(--dim);
+      text-transform: uppercase;
+      line-height: 1;
+    }
+
+    /* ── Sparkline placeholder — desktop hover only ── */
+    .token-row-sparkline {
+      width: 56px;
+      height: 24px;
+      flex-shrink: 0;
+      opacity: 0;
+      transition: opacity 200ms var(--ease-std);
+      display: none;             /* hidden on mobile */
+    }
+
+    /* Inherit color from sparkline-up / sparkline-dn — SVG uses currentColor */
+    .token-row-sparkline.sparkline-up { color: var(--up); }
+    .token-row-sparkline.sparkline-dn { color: var(--dn); }
+
+    @media (min-width: 768px) {
+      .token-row-sparkline          { display: block; }
+    }
+
+    .token-row:hover .token-row-sparkline { opacity: 1; }
+
+    /* ── Price column ── */
+    .token-row-price {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 3px;
+      flex-shrink: 0;
+    }
+
+    .token-row-usd {
+      font-family: var(--fm);
+      font-size: .80rem;
+      letter-spacing: .02em;
+      color: var(--br);
+      line-height: 1.1;
+      /* updatePrice() drives these transitions in Phase 7A */
+      transition: opacity 80ms var(--ease-in), color 600ms var(--ease-std);
+    }
+
+    .token-row-change {
+      font-family: var(--fm);
+      font-size: .62rem;
+      letter-spacing: .04em;
+      line-height: 1;
+    }
+    .token-row-change.up                    { color: var(--up); }
+    .token-row-change.dn                    { color: var(--dn); }
+    .token-row-change:not(.up):not(.dn)     { color: var(--dim); }
+
+    .token-row-volume {
+      font-family: var(--fm);
+      font-size: .56rem;
+      letter-spacing: .06em;
+      color: var(--dim);
+      line-height: 1;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Custom cursor — desktop only -->
+<div id="cur"></div>
+
+<!-- Toast container -->
+<div id="toast-wrap"></div>
+
+<!-- Canvas layers — always behind everything -->
+<canvas id="crystal-canvas"></canvas>
+<canvas id="particle-canvas"></canvas>
+
+<!-- ── DESKTOP LAYOUT (≥ 768px) ─────────────────────────────────── -->
+<div id="app-desktop" class="app-desktop">
+
+  <!-- Sidebar — 220px fixed, glass-m base + #sidebar depth override -->
+  <aside id="sidebar" class="sidebar glass-m">
+    <div class="sidebar-wordmark">OBSIDEUM</div>
+
+    <!-- Wallet block -->
+    <div class="sidebar-wallet-block">
+      <div class="swb-card">
+        <div class="swb-top">
+          <span class="swb-dot" id="swb-dot"></span>
+          <span id="sidebar-wallet"></span>
+        </div>
+        <div id="sidebar-network"></div>
+      </div>
+    </div>
+
+    <!-- Nav -->
+    <nav class="sidebar-nav">
+      <div class="sidebar-nav-indicator" id="sidebar-nav-indicator"></div>
+
+      <button class="nav-item active" data-view="markets">
+        <svg class="nav-icon" viewBox="0 0 24 24">
+          <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
+          <polyline points="16 7 22 7 22 13"/>
+        </svg>
+        <span class="nav-label">Markets</span>
+      </button>
+
+      <button class="nav-item" data-view="swap">
+        <svg class="nav-icon" viewBox="0 0 24 24">
+          <path d="M7 20V4m0 0L3 8m4-4l4 4"/>
+          <path d="M17 4v16m0 0l4-4m-4 4l-4-4"/>
+        </svg>
+        <span class="nav-label">Swap</span>
+      </button>
+
+      <button class="nav-item" data-view="history">
+        <svg class="nav-icon" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9"/>
+          <path d="M12 7v5l3.5 3.5"/>
+        </svg>
+        <span class="nav-label">History</span>
+      </button>
+    </nav>
+
+    <!-- Settings — pinned at bottom -->
+    <button class="nav-item nav-item--settings" id="settings-btn" data-view="settings">
+      <svg class="nav-icon nav-gear" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+      <span class="nav-label">Settings</span>
+    </button>
+  </aside>
+
+  <!-- Content area -->
+  <div id="content-area" class="content-area">
+
+    <div id="markets-layout" class="markets-layout">
+
+      <!-- Token list column — 360px fixed -->
+      <div id="token-list-col" class="token-list-col">
+        <div class="search-wrap">
+          <input class="glass-input token-search" id="token-search"
+            type="text" placeholder="Search tokens..."
+            autocomplete="off" spellcheck="false">
+        </div>
+        <div id="token-list" class="token-list">
+          <!-- Phase 3A renders rows here -->
+        </div>
+      </div>
+
+      <!-- Right panel -->
+      <div id="right-panel" class="right-panel glass-m">
+        <div id="right-panel-content" class="panel-content">
+          <div class="panel-null-state" id="panel-null">
+            <span class="panel-null-label">Select a token to begin</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Settings layout — full content area, hidden by default -->
+    <div id="settings-layout" class="settings-layout" hidden></div>
+
+  </div>
+</div>
+
+<!-- ── MOBILE LAYOUT (< 768px) ──────────────────────────────────── -->
+<div id="app-mobile" class="app-mobile">
+
+  <div id="mobile-top-bar" class="mobile-top-bar">
+    <button id="mobile-back" class="mobile-back" hidden aria-label="Back">
+      <svg viewBox="0 0 20 20" width="20" height="20"
+        fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M12 4l-6 6 6 6"/>
+      </svg>
+    </button>
+    <span class="mobile-wordmark">OBSIDEUM</span>
+    <div class="mobile-top-actions">
+      <button id="mobile-history-btn" class="mobile-icon-btn" aria-label="History">
+        <svg viewBox="0 0 20 20" width="20" height="20"
+          fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="10" cy="10" r="8"/>
+          <path d="M10 6v4l3 3"/>
+        </svg>
+      </button>
+      <button id="mobile-settings-btn" class="mobile-icon-btn" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="20" height="20"
+          fill="none" stroke="currentColor" stroke-width="1.5"
+          stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div id="mobile-content" class="mobile-content">
+    <div id="mobile-markets"  class="mobile-view"><!-- Phase 3B --></div>
+    <div id="mobile-token"    class="mobile-view" hidden><!-- Phase 4C --></div>
+    <div id="mobile-swap"     class="mobile-view" hidden><!-- Phase 5A --></div>
+    <div id="mobile-history"  class="mobile-view" hidden><!-- Phase 5A --></div>
+    <div id="mobile-settings" class="mobile-view" hidden><!-- Phase 8A --></div>
+  </div>
+
+  <nav id="mobile-bottom-nav" class="mobile-bottom-nav">
+    <div class="mobile-nav-indicator" id="mobile-nav-indicator"></div>
+
+    <button class="mobile-nav-item active" data-mobile-view="markets" aria-label="Markets">
+      <svg class="mobile-nav-icon" viewBox="0 0 24 24">
+        <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
+        <polyline points="16 7 22 7 22 13"/>
+      </svg>
+      <span class="mobile-nav-label">Markets</span>
+    </button>
+
+    <button class="mobile-nav-item" data-mobile-view="swap" aria-label="Swap">
+      <svg class="mobile-nav-icon" viewBox="0 0 24 24">
+        <path d="M7 20V4m0 0L3 8m4-4l4 4"/>
+        <path d="M17 4v16m0 0l4-4m-4 4l-4-4"/>
+      </svg>
+      <span class="mobile-nav-label">Swap</span>
+    </button>
+  </nav>
+
+</div>
+
+<!-- Scripts — bottom of body, exact order, never reorder -->
+<script src="fx.js"></script>
+<script src="state.js"></script>
+<script src="wallet.js"></script>
+<script src="prices.js"></script>
+<script src="swap.js"></script>
+<script>
+  function showToast(message, type) {
+    var wrap = document.getElementById('toast-wrap');
+    if (!wrap) return;
+    var el = document.createElement('div');
+    el.className = 'toast' + (type ? ' ' + type : '');
+    el.textContent = message;
+    wrap.appendChild(el);
+    setTimeout(function () {
+      el.style.transition = 'opacity 300ms var(--ease-std)';
+      el.style.opacity = '0';
+      setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 300);
+    }, 3200);
+  }
+
+  FX.init(document.getElementById('crystal-canvas'), document.getElementById('particle-canvas'));
+  FX.start();
+  checkExistingConnection();
+</script>
+
+<!-- ── Phase 2C — Navigation wiring ─────────────────────────────── -->
+<script>
+(function () {
+  'use strict';
+
+  var marketsLayout  = document.getElementById('markets-layout');
+  var settingsLayout = document.getElementById('settings-layout');
+  var rightContent   = document.getElementById('right-panel-content');
+  var panelNull      = document.getElementById('panel-null');
+  var mobileBack     = document.getElementById('mobile-back');
+  var sidebarWallet  = document.getElementById('sidebar-wallet');
+  var sidebarNetwork = document.getElementById('sidebar-network');
+
+  var mobileViews = {
+    markets:  document.getElementById('mobile-markets'),
+    token:    document.getElementById('mobile-token'),
+    swap:     document.getElementById('mobile-swap'),
+    history:  document.getElementById('mobile-history'),
+    settings: document.getElementById('mobile-settings'),
+  };
+
+  var NETWORK_NAMES = {
+    1: 'Ethereum', 42161: 'Arbitrum One', 8453: 'Base', 10: 'Optimism',
+  };
+
+  function renderPanelContent(state) {
+    panelNull.hidden = (state !== null);
+  }
+
+  function setRightPanel(state) {
+    rightContent.classList.add('leaving');
+    setTimeout(function () {
+      renderPanelContent(state);
+      rightContent.classList.remove('leaving');
+      void rightContent.offsetWidth;
+      rightContent.classList.add('entering');
+      setTimeout(function () { rightContent.classList.remove('entering'); }, 240);
+    }, 160);
+  }
+
+  function setView(view) {
+    if (view === 'settings') {
+      marketsLayout.style.display = 'none';
+      settingsLayout.hidden = false;
+    } else {
+      marketsLayout.style.display = '';
+      settingsLayout.hidden = true;
+    }
+    updateSidebarActive();
+  }
+
+  function updateSidebarActive() {
+    var view  = STATE.view;
+    var panel = STATE.rightPanel;
+    document.querySelectorAll('.sidebar .nav-item').forEach(function (btn) {
+      var v = btn.dataset.view;
+      var active =
+        (v === 'markets'  && view === 'markets'  && (panel === null || panel === 'token')) ||
+        (v === 'swap'     && view === 'markets'  && panel === 'swap')    ||
+        (v === 'history'  && view === 'markets'  && panel === 'history') ||
+        (v === 'settings' && view === 'settings');
+      btn.classList.toggle('active', active);
+    });
+    updateSidebarIndicator();
+  }
+
+  function updateSidebarIndicator() {
+    var indicator  = document.getElementById('sidebar-nav-indicator');
+    if (!indicator) return;
+
+    var activeItem = document.querySelector('.sidebar-nav .nav-item.active');
+    if (!activeItem) { indicator.style.opacity = '0'; return; }
+
+    if (!indicator._ready) {
+      indicator.style.transition = 'none';
+      indicator.style.height     = activeItem.offsetHeight + 'px';
+      indicator.style.transform  = 'translateY(' + activeItem.offsetTop + 'px)';
+      indicator.style.opacity    = '1';
+      indicator._ready = true;
+      requestAnimationFrame(function () { indicator.style.transition = ''; });
+      return;
+    }
+
+    indicator.style.opacity   = '1';
+    indicator.style.height    = activeItem.offsetHeight + 'px';
+    indicator.style.transform = 'translateY(' + activeItem.offsetTop + 'px)';
+  }
+
+  function setMobileView(view) {
+    Object.keys(mobileViews).forEach(function (key) {
+      mobileViews[key].hidden = (key !== view);
+    });
+    mobileBack.hidden = (view !== 'token');
+    updateMobileNavActive(view);
+  }
+
+  function updateMobileNavActive(view) {
+    var items = Array.from(document.querySelectorAll('.mobile-nav-item'));
+    items.forEach(function (btn) {
+      btn.classList.toggle('active', btn.dataset.mobileView === view);
+    });
+    var idx = items.findIndex(function (btn) { return btn.dataset.mobileView === view; });
+    var indicator = document.getElementById('mobile-nav-indicator');
+    if (indicator && idx > -1) {
+      indicator.style.transform = 'translateX(' + (idx * 100) + '%)';
+    }
+  }
+
+  function navigateMobile(view) {
+    setState({ prevMobileView: STATE.mobileView, mobileView: view });
+  }
+
+  function truncateAddress(addr) {
+    return addr ? addr.slice(0, 6) + '...' + addr.slice(-4) : '';
+  }
+
+  document.addEventListener('state:view',       function (e) { setView(e.detail); });
+  document.addEventListener('state:rightPanel',  function (e) { setRightPanel(e.detail); updateSidebarActive(); });
+  document.addEventListener('state:mobileView',  function (e) { setMobileView(e.detail); });
+
+  document.addEventListener('state:wallet', function (e) {
+    var addr = e.detail;
+    sidebarWallet.textContent = addr ? truncateAddress(addr) : '';
+    sidebarWallet.style.color = '';
+    var dot = document.getElementById('swb-dot');
+    if (dot) dot.classList.toggle('connected', !!addr);
+  });
+
+  document.addEventListener('state:ens', function (e) {
+    var ens = e.detail;
+    if (!ens || !STATE.wallet) return;
+    sidebarWallet.style.opacity = '0';
+    setTimeout(function () {
+      sidebarWallet.textContent   = ens;
+      sidebarWallet.style.color   = 'var(--em-2)';
+      sidebarWallet.style.opacity = '1';
+    }, 100);
+  });
+
+  document.addEventListener('state:network', function (e) {
+    var id   = e.detail;
+    var name = NETWORK_NAMES[id] || ('Chain ' + id);
+    sidebarNetwork.textContent = id ? name : '';
+    var wrong = id && STATE.settings.defaultNetwork && id !== STATE.settings.defaultNetwork;
+    sidebarNetwork.style.color = wrong ? 'var(--warn)' : '';
+  });
+
+  document.querySelectorAll('.sidebar-nav .nav-item').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var v = btn.dataset.view;
+      if      (v === 'markets') setState({ view: 'markets', rightPanel: null });
+      else if (v === 'swap')    setState({ view: 'markets', rightPanel: 'swap' });
+      else if (v === 'history') setState({ view: 'markets', rightPanel: 'history' });
+    });
+  });
+
+  document.getElementById('settings-btn').addEventListener('click', function () {
+    setState({ view: 'settings' });
+  });
+
+  document.querySelectorAll('.mobile-nav-item').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var view = btn.dataset.mobileView;
+      if (view) navigateMobile(view);
+    });
+  });
+
+  document.getElementById('mobile-history-btn').addEventListener('click', function () {
+    navigateMobile('history');
+  });
+  document.getElementById('mobile-settings-btn').addEventListener('click', function () {
+    navigateMobile('settings');
+  });
+
+  mobileBack.addEventListener('click', function () {
+    navigateMobile(STATE.prevMobileView || 'markets');
+  });
+
+  window.addEventListener('resize', updateSidebarIndicator);
+
+  (function () {
+    function setAppHeight() {
+      document.documentElement.style.setProperty('--app-h', window.innerHeight + 'px');
+    }
+    setAppHeight();
+    window.addEventListener('resize', setAppHeight);
+  }());
+
+  setView(STATE.view              || 'markets');
+  setMobileView(STATE.mobileView  || 'markets');
+  setRightPanel(STATE.rightPanel);
+  requestAnimationFrame(updateSidebarIndicator);
+
+}());
+</script>
+
+<!-- ── Phase 3A — Token Row Component ───────────────────────────── -->
+<script>
+(function () {
+  'use strict';
+
+  /* ── Mock data — canonical schemas from OBSIDEUM-1_0.md ── */
+
+  var MOCK_TOKEN_LIST = [
+    { address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', symbol: 'WETH', name: 'Wrapped Ether',   decimals: 18 },
+    { address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', symbol: 'WBTC', name: 'Wrapped Bitcoin',  decimals: 8  },
+    { address: '0x514910771AF9Ca656af840dff83E8264EcF986CA', symbol: 'LINK', name: 'Chainlink',        decimals: 18 },
+    { address: '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984', symbol: 'UNI',  name: 'Uniswap',         decimals: 18 },
+    { address: '0x6B175474E89094C44Da98b954EedeAC495271d0F', symbol: 'DAI',  name: 'Dai Stablecoin',  decimals: 18 },
+    { address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', symbol: 'USDC', name: 'USD Coin',        decimals: 6  },
+  ];
+
+  var MOCK_PRICES = {
+    '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2': { usd: 3247.82,  change24h:  2.61 },
+    '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599': { usd: 67420.00, change24h:  1.14 },
+    '0x514910771AF9Ca656af840dff83E8264EcF986CA': { usd: 14.23,    change24h: -0.52 },
+    '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984': { usd: 8.20,     change24h:  3.08 },
+    '0x6B175474E89094C44Da98b954EedeAC495271d0F': { usd: 1.00,     change24h:  0.01 },
+    '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48': { usd: 1.00,     change24h: -0.01 },
+  };
+
+  /* Volume — Phase 7C wires real data; mock values used until then */
+  var MOCK_VOLUMES = {
+    '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2': 18400000000,
+    '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599': 2300000000,
+    '0x514910771AF9Ca656af840dff83E8264EcF986CA': 450000000,
+    '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984': 180000000,
+    '0x6B175474E89094C44Da98b954EedeAC495271d0F': 890000000,
+    '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48': 5200000000,
+  };
+
+  /* ── Helpers ── */
+
+  /*
+   * getLogoUrl — Trust Wallet Assets CDN.
+   * ethers.getAddress() checksums the address — required by CDN path.
+   */
+  function getLogoUrl(address) {
+    var cs = address;
+    try { cs = ethers.utils.getAddress(address); } catch (_) {}
+    return 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/' + cs + '/logo.png';
+  }
+
+  function formatPrice(usd) {
+    if (usd >= 10000) return '$' + usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    if (usd >= 1)     return '$' + usd.toFixed(2);
+    return '$' + usd.toFixed(4);
+  }
+
+  function formatChange(change) {
+    var prefix = change >= 0 ? '+' : '';
+    return prefix + change.toFixed(2) + '%';
+  }
+
+  function formatVolume(vol) {
+    if (!vol) return '';
+    if (vol >= 1e9) return '$' + (vol / 1e9).toFixed(1) + 'B';
+    if (vol >= 1e6) return '$' + (vol / 1e6).toFixed(1) + 'M';
+    if (vol >= 1e3) return '$' + (vol / 1e3).toFixed(1) + 'K';
+    return '$' + Math.round(vol);
+  }
+
+  /*
+   * buildSparklineSVG — static placeholder for Phase 4B.
+   * Uses currentColor so CSS variables drive the stroke via
+   * .sparkline-up { color: var(--up) } / .sparkline-dn { color: var(--dn) }.
+   */
+  function buildSparklineSVG(isUp) {
+    var up = '2,20 6,17 11,18 17,13 23,15 29,10 35,12 41,7 47,9 54,5';
+    var dn = '2,5  6,8  11,6  17,11 23,9  29,14 35,12 41,17 47,14 54,20';
+    return '<svg width="56" height="24" viewBox="0 0 56 24" fill="none" aria-hidden="true">'
+      + '<polyline points="' + (isUp ? up : dn) + '" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
+      + '</svg>';
+  }
+
+  /* ── Row builders ── */
+
+  function buildSkeletonRow() {
+    var row = document.createElement('div');
+    row.className = 'token-row token-row--skeleton';
+    row.innerHTML =
+      '<div class="token-row-logo">'
+      +   '<div class="skeleton" style="width:28px;height:28px;border-radius:50%"></div>'
+      + '</div>'
+      + '<div class="token-row-info">'
+      +   '<div class="skeleton" style="width:90px;height:11px;margin-bottom:6px"></div>'
+      +   '<div class="skeleton" style="width:40px;height:9px"></div>'
+      + '</div>'
+      + '<div class="token-row-price">'
+      +   '<div class="skeleton" style="width:72px;height:11px;margin-bottom:6px"></div>'
+      +   '<div class="skeleton" style="width:48px;height:9px"></div>'
+      + '</div>';
+    return row;
+  }
+
+  function buildTokenRow(token, price) {
+    var row = document.createElement('div');
+    row.className = 'token-row';
+    row.setAttribute('data-address', token.address);
+    row.setAttribute('role', 'button');
+    row.setAttribute('tabindex', '0');
+
+    var change      = price ? price.change24h : 0;
+    var changeClass = change > 0 ? 'up' : change < 0 ? 'dn' : '';
+    var changeText  = price ? formatChange(change) : '—';
+    var priceText   = price ? formatPrice(price.usd) : '—';
+    var volumeText  = formatVolume(MOCK_VOLUMES[token.address]);
+    var isUp        = change >= 0;
+
+    row.innerHTML =
+      '<div class="token-row-logo">'
+      +   '<img class="token-logo" src="' + getLogoUrl(token.address) + '" alt="' + token.symbol + '" width="28" height="28">'
+      +   '<div class="token-logo-fallback" style="display:none">' + token.symbol[0] + '</div>'
+      + '</div>'
+      + '<div class="token-row-info">'
+      +   '<span class="token-row-name">'   + token.name   + '</span>'
+      +   '<span class="token-row-symbol">' + token.symbol + '</span>'
+      +   '<span class="token-row-chain">Ethereum</span>'
+      + '</div>'
+      + '<div class="token-row-sparkline ' + (isUp ? 'sparkline-up' : 'sparkline-dn') + '">'
+      +   buildSparklineSVG(isUp)
+      + '</div>'
+      + '<div class="token-row-price">'
+      +   '<span class="token-row-usd" data-address="' + token.address + '">' + priceText + '</span>'
+      +   '<span class="token-row-change ' + changeClass + '">' + changeText + '</span>'
+      +   (volumeText ? '<span class="token-row-volume">' + volumeText + '</span>' : '')
+      + '</div>';
+
+    /* Logo fallback — hide img, show initial circle */
+    var img      = row.querySelector('.token-logo');
+    var fallback = row.querySelector('.token-logo-fallback');
+    img.onerror = function () {
+      img.style.display      = 'none';
+      fallback.style.display = 'flex';
+    };
+
+    /* Click + keyboard navigation */
+    row.addEventListener('click',   function () { navigateToToken(token.address); });
+    row.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        navigateToToken(token.address);
+      }
+    });
+
+    return row;
+  }
+
+  /* ── Navigation ── */
+
+  function navigateToToken(address) {
+    if (!window.STATE || !window.setState) return;
+    if (window.innerWidth >= 768) {
+      setState({ rightPanel: 'token', token: address });
+    } else {
+      setState({ prevMobileView: STATE.mobileView, mobileView: 'token', token: address });
+    }
+  }
+
+  /* ── Render ── */
+
+  var tokenList = document.getElementById('token-list');
+
+  /* Show 3 skeleton rows immediately — no async operation shows blank */
+  for (var s = 0; s < 3; s++) {
+    tokenList.appendChild(buildSkeletonRow());
+  }
+
+  /*
+   * Simulate data load — 800ms.
+   * Phase 7A wires real Chainlink prices into this exact flow.
+   * The skeleton → loaded transition stays; only the data source changes.
+   */
+  setTimeout(function () {
+
+    /* Fade skeletons out */
+    var skeletons = Array.from(tokenList.querySelectorAll('.token-row--skeleton'));
+    skeletons.forEach(function (s) {
+      s.style.transition = 'opacity 160ms var(--ease-in)';
+      s.style.opacity    = '0';
+    });
+
+    setTimeout(function () {
+      tokenList.innerHTML = '';
+
+      MOCK_TOKEN_LIST.forEach(function (token, i) {
+        var price = MOCK_PRICES[token.address];
+        var row   = buildTokenRow(token, price);
+
+        /* Staggered entrance — each row falls into place */
+        row.style.opacity   = '0';
+        row.style.transform = 'translateY(4px)';
+        tokenList.appendChild(row);
+
+        setTimeout(function (r) {
+          r.style.transition = 'opacity 220ms var(--ease-out), transform 220ms var(--ease-spr)';
+          r.style.opacity    = '1';
+          r.style.transform  = 'translateY(0)';
+        }.bind(null, row), i * 40);
+      });
+
+    }, 160);
+
+  }, 800);
+
+}());
+</script>
+
+</body>
+</html>
