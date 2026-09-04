@@ -147,6 +147,7 @@
       },
       handleScroll: false,
       handleScale:  false,
+      watermark:    { visible: false },
     });
 
     var lineSeries = chart.addLineSeries({
@@ -259,6 +260,7 @@
   ───────────────────────────────────────────────────────────────── */
   function mountChart(container, address, tf) {
     requestAnimationFrame(function () {
+    requestAnimationFrame(function () {  /* double-rAF: mobile panels animate in, layout needs two frames to settle */
       var slot     = container.querySelector('.token-panel-chart-slot');
       var priceDiv = slot && slot.querySelector('.price-chart');
       if (!slot || !priceDiv || !address) return;
@@ -288,7 +290,8 @@
       });
 
       wireToggles(slot, priceDiv, instance, address);
-    });
+    });  /* end inner rAF */
+    });  /* end outer rAF */
   }
 
   /* ─────────────────────────────────────────────────────────────────
