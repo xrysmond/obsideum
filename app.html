@@ -841,7 +841,6 @@
 
     .token-panel-chart-slot {
       flex-shrink: 0;
-      height: 224px;
     }
 
     .tp-skel-logo   { width: 40px;  height: 40px;  border-radius: 50%;  }
@@ -851,33 +850,22 @@
     .tp-skel-change { width: 120px; height: 13px;  }
 
     /* ══════════════════════════════════════════════════════════════
-       PHASE 4B — PRICE CHART
+       PHASE 4B — PRICE CHART (Lightweight Charts)
        ══════════════════════════════════════════════════════════════ */
 
-    .chart-section {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      border-radius: 8px;
-      border: 1px solid rgba(156,61,187,.13);
-      background: rgba(9,7,14,.52);
-      -webkit-backdrop-filter: blur(12px) saturate(120%);
-      backdrop-filter: blur(12px) saturate(120%);
-      overflow: hidden;
-      box-shadow:
-        inset 0 1px 0 rgba(156,61,187,.24),
-        inset 0 -1px 0 rgba(156,61,187,.06),
-        0 0 0 0.5px rgba(156,61,187,.07),
-        0 4px 24px rgba(0,0,0,.30),
-        0 12px 48px rgba(0,0,0,.18);
+    .price-chart {
+      width: 100%;
+      height: 200px;
+      position: relative;
     }
 
-    .chart-toggles {
+    .chart-time-toggles {
       display: flex;
+      align-items: center;
+      gap: 0;
       position: relative;
-      padding: var(--sp-1) 0 0 var(--sp-2);
-      flex-shrink: 0;
-      border-bottom: 1px solid rgba(156,61,187,.08);
+      padding-bottom: 8px;
+      margin-bottom: 8px;
     }
 
     .chart-toggle-indicator {
@@ -885,6 +873,7 @@
       bottom: 0;
       height: 1.5px;
       background: var(--em);
+      border-radius: 1px;
       box-shadow:
         0 0 6px 1px rgba(156,61,187,.55),
         0 0 14px 3px rgba(156,61,187,.22);
@@ -892,7 +881,7 @@
       transition: left 220ms var(--ease-spr), width 220ms var(--ease-spr);
     }
 
-    .chart-toggle-btn {
+    .chart-toggle {
       font-family: var(--fm);
       font-size: .64rem;
       font-weight: 300;
@@ -913,31 +902,10 @@
       -webkit-tap-highlight-color: transparent;
     }
 
-    .chart-toggle-btn.active             { color: var(--em-2); }
-    .chart-toggle-btn:hover:not(.active) { color: var(--bd); }
-    .chart-toggle-btn:active             { transform: scale(.94); transition: transform 80ms var(--ease-spr); }
-    .chart-toggle-btn:focus-visible      { outline: 1.5px solid rgba(156,61,187,.50); outline-offset: 2px; }
-
-    .chart-wrap {
-      position: relative;
-      flex: 1;
-      min-height: 0;
-    }
-
-    .chart-canvas {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      display: block;
-      cursor: crosshair;
-      touch-action: none;
-      -webkit-tap-highlight-color: transparent;
-    }
-
-    .chart-canvas.zone-y   { cursor: ns-resize; }
-    .chart-canvas.zone-x   { cursor: ew-resize; }
-    .chart-canvas.dragging { cursor: grabbing;  }
+    .chart-toggle.active             { color: var(--em-2); }
+    .chart-toggle:hover:not(.active) { color: var(--bd); }
+    .chart-toggle:active             { transform: scale(.94); transition: transform 80ms var(--ease-spr); }
+    .chart-toggle:focus-visible      { outline: 1.5px solid rgba(156,61,187,.50); outline-offset: 2px; }
 
     /* ══════════════════════════════════════════════════════════════
        PHASE 4C — STAT CELLS + SWAP BUTTON
@@ -1992,6 +1960,7 @@
 </div>
 
 <!-- Scripts — bottom of body, exact order, never reorder -->
+<script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
 <script src="fx.js"></script>
 <script src="state.js"></script>
 <script src="wallet.js"></script>
@@ -2648,6 +2617,7 @@
   }
 
   function mountChart(slot, address, tf) {
+    return; /* neutralized — prices.js (Lightweight Charts) owns chart mounting */
     var wrap = slot.querySelector('.chart-wrap');
     if (!wrap) return;
 
@@ -2904,12 +2874,7 @@
   var rightContent    = document.getElementById('right-panel-content');
   var mobileTokenView = document.getElementById('mobile-token');
 
-  function tryMount(container, address, tf) {
-    requestAnimationFrame(function () {
-      var slot = container.querySelector('.token-panel-chart-slot');
-      if (slot && address) renderChart(slot, address, tf || '24H');
-    });
-  }
+  function tryMount(container, address, tf) { /* neutralized — prices.js (Lightweight Charts) owns chart mounting */ }
 
   document.addEventListener('panel:render', function (e) {
     if (e.detail !== 'token') return;
@@ -3070,7 +3035,7 @@
       +   '<div class="skeleton tp-skel-price"></div>'
       +   '<div class="skeleton tp-skel-change"></div>'
       + '</div>'
-      + '<div class="token-panel-chart-slot"></div>'
+      + '<div class="token-panel-chart-slot"><div class="skeleton price-chart" style="border-radius:0"></div></div>'
       /* Phase 4C — skeleton stat cells */
       + '<div class="tp-skel-stats">'
       +   '<div class="tp-skel-stat">'
@@ -3149,8 +3114,16 @@
       +     '<span class="token-panel-change-period">24h</span>'
       +   '</div>'
       + '</div>'
-      /* Chart slot — 4B mounts canvas here */
-      + '<div class="token-panel-chart-slot"></div>'
+      /* Chart slot — prices.js (Lightweight Charts) mounts here */
+      + '<div class="token-panel-chart-slot">'
+      +   '<div class="chart-time-toggles">'
+      +     '<button class="chart-toggle active" data-range="24H">24H</button>'
+      +     '<button class="chart-toggle" data-range="7D">7D</button>'
+      +     '<button class="chart-toggle" data-range="30D">30D</button>'
+      +     '<div class="chart-toggle-indicator"></div>'
+      +   '</div>'
+      +   '<div class="price-chart"></div>'
+      + '</div>'
       /* ── Phase 4C: Stat cells ── */
       + '<div class="token-panel-stats">'
       +   buildStatCell('Market Cap',          stats.marketCap, stats.marketCapSub)
@@ -3260,7 +3233,9 @@
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-  document.addEventListener('chart:mounted', function (e) {
+  /* chart:mounted neutralized — canvas chart replaced by Lightweight Charts (prices.js).
+     Lightweight Charts handles zoom, pan, and crosshair natively. */
+  document.addEventListener('chart:mounted_disabled', function (e) {
     var cv = e.detail;
     var d  = cv._4b;
     if (!d || !d.points.length) return;
