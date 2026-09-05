@@ -1,8 +1,8 @@
-/* prices.js — Phase 4B: TradingView Lightweight Charts
- * Chart init, render, time toggle wiring, skeleton, crosshair price update.
+/* prices.js — Phase 4B: TradingView Lightweight Charts v4.2.2
+ * Area series with violet gradient fill.
  * Mock price history seeded into STATE.priceHistory.
- * Phase 7B wires real Uniswap API fetch into toggle callbacks; renderChart() is untouched.
- * Phase 7A wires Chainlink latestRoundData() polling; updateAllPrices() added here.
+ * Phase 7B wires real Uniswap API fetch; renderChart() is untouched.
+ * Phase 7A wires Chainlink polling; updateAllPrices() added here then.
  */
 (function () {
   'use strict';
@@ -10,13 +10,12 @@
   /* ─────────────────────────────────────────────────────────────────
      MOCK PRICE HISTORY
      Shape: { prices: [[timestamp_ms, price_usd], ...] }
-     Matches Uniswap API response exactly — data.prices is the array.
-     Phase 7B replaces the fetch; chart rendering code is untouched.
+     Matches Uniswap API shape exactly — Phase 7B replaces the source,
+     renderChart() never changes.
   ───────────────────────────────────────────────────────────────── */
   var MOCK_PRICE_HISTORY = (function () {
     var now = Date.now();
 
-    /* Deterministic pseudo-random — same seed always gives same chart shape */
     function pr(n) {
       var x = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
       return x - Math.floor(x);
@@ -28,7 +27,7 @@
       return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
     }
 
-    /* Mean-reverting random walk — looks like real price action */
+    /* Mean-reverting random walk — deterministic, looks like real price action */
     function walk(base, count, stepMs, vol, seed) {
       var pts   = [];
       var kappa = 0.08;
@@ -40,7 +39,7 @@
         var noise = randn(seed + i * 3 + 7) * vol;
         p = p * (1 + drift + noise);
       }
-      pts[pts.length - 1][1] = base; /* pin last value to current price */
+      pts[pts.length - 1][1] = base;
       return { prices: pts };
     }
 
@@ -88,7 +87,6 @@
 
   /* ─────────────────────────────────────────────────────────────────
      SKELETON
-     Spec: .price-chart div shows .skeleton sweep until setData() fires.
   ───────────────────────────────────────────────────────────────── */
   function showChartSkeleton(priceDiv) {
     if (priceDiv) priceDiv.classList.add('skeleton');
@@ -99,7 +97,7 @@
   }
 
   /* ─────────────────────────────────────────────────────────────────
-     DESTROY — tear down any existing Lightweight Charts instance
+     DESTROY — remove chart instance and clear container
   ───────────────────────────────────────────────────────────────── */
   function destroyChart(priceDiv) {
     if (!priceDiv) return;
@@ -113,9 +111,10 @@
   }
 
   /* ─────────────────────────────────────────────────────────────────
-     INIT — create Lightweight Charts instance in a .price-chart div
-     Spec: transparent background, violet crosshair, no scroll/scale,
-     crosshair labels background #9C3DBB, violet line #9C3DBB 1.5px.
+     INIT — area series with violet gradient fill
+     handleScroll / handleScale enabled with mobile-safe config:
+       vertTouchDrag: false  →  vertical page scroll still works
+       horzTouchDrag: true   →  swipe left/right scrubs the timeline
   ───────────────────────────────────────────────────────────────── */
   function initChart(priceDiv) {
     if (!priceDiv || typeof LightweightCharts === 'undefined') return null;
@@ -135,24 +134,37 @@
       },
       rightPriceScale: {
         borderColor:  'rgba(156,61,187,.10)',
-        scaleMargins: { top: 0.1, bottom: 0.1 },
+        scaleMargins: { top: 0.12, bottom: 0.08 },
       },
       timeScale: {
-        borderColor: 'rgba(156,61,187,.10)',
-        timeVisible: false,
+        borderColor:  'rgba(156,61,187,.10)',
+        timeVisible:  false,
+        fixRightEdge: true,
       },
       crosshair: {
+        mode: 1, /* CrosshairMode.Magnet — snaps crosshair to nearest data point */
         vertLine: { color: 'rgba(156,61,187,.5)', width: 1, style: 3, labelBackgroundColor: '#9C3DBB' },
         horzLine: { color: 'rgba(156,61,187,.5)', width: 1, style: 3, labelBackgroundColor: '#9C3DBB' },
       },
-      handleScroll: false,
-      handleScale:  false,
-      watermark:    { visible: false },
+      handleScroll: {
+        mouseWheel:       true,
+        pressedMouseMove: true,
+        horzTouchDrag:    true,
+        vertTouchDrag:    false,
+      },
+      handleScale: {
+        mouseWheel:           true,
+        pinch:                true,
+        axisPressedMouseMove: true,
+      },
+      watermark: { visible: false },
     });
 
-    var lineSeries = chart.addLineSeries({
-      color:                          '#9C3DBB',
+    var series = chart.addAreaSeries({
+      lineColor:                      '#9C3DBB',
       lineWidth:                      1.5,
+      topColor:                       'rgba(156,61,187,0.32)',
+      bottomColor:                    'rgba(156,61,187,0.00)',
       crosshairMarkerVisible:         true,
       crosshairMarkerRadius:          4,
       crosshairMarkerBackgroundColor: '#9C3DBB',
@@ -160,7 +172,7 @@
       priceLineVisible:               false,
     });
 
-    /* Crosshair → update .token-panel-usd; restore on leave */
+    /* Crosshair → live price in header; restore original on leave */
     var _savedPrice = null;
     chart.subscribeCrosshairMove(function (param) {
       var panel   = priceDiv.closest('.token-panel');
@@ -168,7 +180,7 @@
       if (!priceEl) return;
 
       if (param.point && param.seriesData && param.seriesData.size) {
-        var d = param.seriesData.get(lineSeries);
+        var d = param.seriesData.get(series);
         if (d) {
           if (_savedPrice === null) _savedPrice = priceEl.textContent;
           priceEl.textContent = fmtP(d.value);
@@ -179,7 +191,7 @@
       }
     });
 
-    /* ResizeObserver — chart resizes when right panel width changes */
+    /* ResizeObserver — chart width tracks the right panel */
     var ro = new ResizeObserver(function () {
       if (!priceDiv._lc) return;
       var newW = priceDiv.offsetWidth;
@@ -187,140 +199,172 @@
     });
     ro.observe(priceDiv);
 
-    var instance = { chart: chart, lineSeries: lineSeries, ro: ro };
+    var instance = { chart: chart, series: series, ro: ro };
     priceDiv._lc = instance;
     return instance;
   }
 
   /* ─────────────────────────────────────────────────────────────────
-     RENDER — load price history data into the chart
-     rawPrices: [[timestamp_ms, price_usd], ...]  (Uniswap API / mock shape)
-     Lightweight Charts requires seconds; we convert here.
-     On time toggle: call renderChart() with new data — chart redraws automatically.
+     RENDER — set price history data on the chart
+     rawPrices: [[timestamp_ms, price_usd], ...]
+     Converts ms → s for Lightweight Charts. Phase 7B swaps the data
+     source; this function is never touched.
   ───────────────────────────────────────────────────────────────── */
   function renderChart(instance, rawPrices) {
-    if (!instance || !instance.lineSeries) return;
+    if (!instance || !instance.series) return;
     if (!rawPrices || !rawPrices.length) return;
     var data = rawPrices.map(function (pt) {
       return { time: Math.floor(pt[0] / 1000), value: pt[1] };
     });
-    instance.lineSeries.setData(data);
+    instance.series.setData(data);
     instance.chart.timeScale().fitContent();
   }
 
   /* ─────────────────────────────────────────────────────────────────
-     WIRE TOGGLES — 24H · 7D · 30D sliding indicator
-     Indicator slides between buttons: transition left 220ms --ease-spr.
-     Cache check first; Phase 7B wires real fetch for missing ranges.
+     WIRE TOGGLES — event delegation on the slot element
+     WHY DELEGATION:
+       mountChart can fire twice per token select (panel:render +
+       state:token both dispatch). Two calls → two wireToggles calls →
+       two click listeners per button. The second listener's guard
+       (.active already set by first) bails out immediately — chart
+       never rerenders on toggle.
+     FIX:
+       One delegated listener on the slot. Removed and replaced on
+       each wireToggles call. Instance always read from priceDiv._lc
+       at click time — never a stale closure reference.
   ───────────────────────────────────────────────────────────────── */
-  function wireToggles(slot, priceDiv, instance, address) {
-    var toggles   = Array.from(slot.querySelectorAll('.chart-toggle'));
+  function wireToggles(slot, address) {
     var indicator = slot.querySelector('.chart-toggle-indicator');
 
     function posIndicator(btn) {
-      if (!indicator) return;
+      if (!indicator || !btn) return;
       requestAnimationFrame(function () {
         indicator.style.left  = btn.offsetLeft  + 'px';
         indicator.style.width = btn.offsetWidth + 'px';
       });
     }
 
-    /* Initial position — after layout is complete */
+    /* Position indicator on the initially active toggle after layout */
     requestAnimationFrame(function () {
-      var active = slot.querySelector('.chart-toggle.active');
-      if (active) posIndicator(active);
+      posIndicator(slot.querySelector('.chart-toggle.active'));
     });
 
-    toggles.forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        if (btn.classList.contains('active')) return;
-        toggles.forEach(function (b) { b.classList.remove('active'); });
-        btn.classList.add('active');
-        posIndicator(btn);
+    /* Remove previous listener — safe when _toggleHandler is undefined */
+    if (slot._toggleHandler) {
+      slot.removeEventListener('click', slot._toggleHandler);
+      slot._toggleHandler = null;
+    }
 
-        var tf     = btn.dataset.range;
-        var cached = window.STATE
-          && STATE.priceHistory
-          && STATE.priceHistory[address]
-          && STATE.priceHistory[address][tf];
+    /* One delegated listener handles all three toggle buttons */
+    slot._toggleHandler = function (e) {
+      var btn = e.target.closest('.chart-toggle');
+      if (!btn || btn.classList.contains('active')) return;
 
-        if (cached && cached.prices) {
-          hideChartSkeleton(priceDiv);
-          renderChart(instance, cached.prices);
-        } else {
-          showChartSkeleton(priceDiv);
-          /* Phase 7B: fetchPriceHistory(address, tf).then(...) wires here */
-        }
+      Array.from(slot.querySelectorAll('.chart-toggle')).forEach(function (b) {
+        b.classList.remove('active');
       });
-    });
+      btn.classList.add('active');
+      posIndicator(btn);
+
+      /* Read current live instance — never stale */
+      var priceDiv = slot.querySelector('.price-chart');
+      var instance = priceDiv && priceDiv._lc;
+      if (!instance) return;
+
+      var tf = btn.dataset.range;
+      var cached = window.STATE
+        && STATE.priceHistory
+        && STATE.priceHistory[address]
+        && STATE.priceHistory[address][tf];
+
+      if (cached && cached.prices) {
+        hideChartSkeleton(priceDiv);
+        renderChart(instance, cached.prices);
+      } else {
+        showChartSkeleton(priceDiv);
+        /* Phase 7B: real Uniswap V3 subgraph fetch wires here */
+      }
+    };
+
+    slot.addEventListener('click', slot._toggleHandler);
   }
 
   /* ─────────────────────────────────────────────────────────────────
-     MOUNT — full chart lifecycle for a token panel container
+     MOUNT — full chart lifecycle, debounced per container
+     WHY DEBOUNCE:
+       panel:render and state:token fire in the same tick when a token
+       is selected. Without debouncing, mountChart runs twice: the
+       second destroyChart wipes the instance the first one built,
+       and both wireToggles calls stack listeners on the same buttons.
+     FIX:
+       setTimeout(fn, 0) collapses concurrent calls into one, always
+       using the most recent address/tf, running after all synchronous
+       event handlers (including DOM injection) have completed.
   ───────────────────────────────────────────────────────────────── */
   function mountChart(container, address, tf) {
-    requestAnimationFrame(function () {
-    requestAnimationFrame(function () {  /* double-rAF: mobile panels animate in, layout needs two frames to settle */
-      var slot     = container.querySelector('.token-panel-chart-slot');
-      var priceDiv = slot && slot.querySelector('.price-chart');
-      if (!slot || !priceDiv || !address) return;
+    if (container._lcMountTimer) clearTimeout(container._lcMountTimer);
+    container._lcMountTimer = setTimeout(function () {
+      container._lcMountTimer = null;
 
-      destroyChart(priceDiv);
+      requestAnimationFrame(function () {
+        var slot     = container.querySelector('.token-panel-chart-slot');
+        var priceDiv = slot && slot.querySelector('.price-chart');
+        if (!slot || !priceDiv || !address) return;
 
-      var instance = initChart(priceDiv);
-      if (!instance) return;
+        destroyChart(priceDiv);
 
-      /* Load data */
-      var history = window.STATE
-        && STATE.priceHistory
-        && STATE.priceHistory[address]
-        && STATE.priceHistory[address][tf || '24H'];
+        var instance = initChart(priceDiv);
+        if (!instance) return;
 
-      if (history && history.prices) {
-        hideChartSkeleton(priceDiv);
-        renderChart(instance, history.prices);
-      } else {
-        showChartSkeleton(priceDiv);
-        /* Phase 7B: fetch here, then hideChartSkeleton() → renderChart() */
-      }
+        var history = window.STATE
+          && STATE.priceHistory
+          && STATE.priceHistory[address]
+          && STATE.priceHistory[address][tf || '24H'];
 
-      /* Sync active toggle to the requested timeframe */
-      Array.from(slot.querySelectorAll('.chart-toggle')).forEach(function (b) {
-        b.classList.toggle('active', b.dataset.range === (tf || '24H'));
+        if (history && history.prices) {
+          hideChartSkeleton(priceDiv);
+          renderChart(instance, history.prices);
+        } else {
+          showChartSkeleton(priceDiv);
+          /* Phase 7B: fetch → hideChartSkeleton() → renderChart() */
+        }
+
+        /* Sync active toggle to the mounted timeframe */
+        Array.from(slot.querySelectorAll('.chart-toggle')).forEach(function (b) {
+          b.classList.toggle('active', b.dataset.range === (tf || '24H'));
+        });
+
+        wireToggles(slot, address);
       });
-
-      wireToggles(slot, priceDiv, instance, address);
-    });  /* end inner rAF */
-    });  /* end outer rAF */
+    }, 0);
   }
 
   /* ─────────────────────────────────────────────────────────────────
      STATE EVENT LISTENERS
-     Mirrors the pattern used by the token panel builder in app.html.
   ───────────────────────────────────────────────────────────────── */
   var rightContent    = document.getElementById('right-panel-content');
   var mobileTokenView = document.getElementById('mobile-token');
 
-  /* Desktop: right panel switched to token view */
+  /* Desktop — right panel switched to token view */
   document.addEventListener('panel:render', function (e) {
     if (e.detail !== 'token') return;
     mountChart(rightContent, window.STATE && STATE.token, '24H');
   });
 
-  /* Mobile: token view activated */
+  /* Mobile — token view activated */
   document.addEventListener('state:mobileView', function (e) {
     if (e.detail !== 'token') return;
     mountChart(mobileTokenView, window.STATE && STATE.token, '24H');
   });
 
-  /* Token changed while already showing token view */
+  /* Token changed while token view is already visible */
   document.addEventListener('state:token', function (e) {
     var address = e.detail;
     if (window.STATE && STATE.rightPanel === 'token') mountChart(rightContent,    address, '24H');
     if (window.STATE && STATE.mobileView === 'token') mountChart(mobileTokenView, address, '24H');
   });
 
-  /* priceHistory updated — Phase 7B real fetch returns here */
+  /* priceHistory updated — Phase 7B real fetch lands here */
   document.addEventListener('state:priceHistory', function () {
     var address = window.STATE && STATE.token;
     if (!address) return;
