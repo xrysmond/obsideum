@@ -154,7 +154,17 @@ function updateMobilePill() {
 function openWalletSheet() {
   var sheet   = document.getElementById('wallet-sheet');
   var overlay = document.getElementById('wallet-sheet-overlay');
-  if (!sheet || !overlay) return;
+
+  /*
+   * Wallet sheet DOM is added in Phase 6C.
+   * Until then: if the user isn't connected, go straight to Privy's modal.
+   * If already connected, nothing to show yet — 6C handles that state.
+   * This bypass is removed once Phase 6C adds the sheet to the HTML.
+   */
+  if (!sheet || !overlay) {
+    if (!STATE.connected) connect();
+    return;
+  }
 
   renderWalletSheet();
 
