@@ -213,11 +213,38 @@
   function renderChart(instance, rawPrices) {
     if (!instance || !instance.series) return;
     if (!rawPrices || !rawPrices.length) return;
+
     var data = rawPrices.map(function (pt) {
       return { time: Math.floor(pt[0] / 1000), value: pt[1] };
     });
+
     instance.series.setData(data);
     instance.chart.timeScale().fitContent();
+
+    /* Enforce 1 % minimum visible price window.
+       LW Charts fills the full chart height with whatever range the data
+       has — a 0.000181 stablecoin move looks identical to a 20 % crash.
+       autoscaleInfoProvider expands the window to at least 1 % of the
+       midpoint price when the actual data range is smaller than that.
+       Volatile assets (ETH, BTC) have ranges >> 1 % so they are
+       unaffected — Math.min / Math.max never shrink an existing range. */
+    var prices   = data.map(function (d) { return d.value; });
+    var minP     = Math.min.apply(null, prices);
+    var maxP     = Math.max.apply(null, prices);
+    var mid      = (maxP + minP) / 2;
+    var minRange = mid * 0.01; /* 1 % floor */
+
+    instance.series.applyOptions({
+      autoscaleInfoProvider: function () {
+        return {
+          priceRange: {
+            minValue: Math.min(minP, mid - minRange / 2),
+            maxValue: Math.max(maxP, mid + minRange / 2),
+          },
+          margins: { above: 0.10, below: 0.10 },
+        };
+      },
+    });
   }
 
   /* ─────────────────────────────────────────────────────────────────

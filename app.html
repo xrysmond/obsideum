@@ -907,6 +907,9 @@
     .chart-toggle:active             { transform: scale(.94); transition: transform 80ms var(--ease-spr); }
     .chart-toggle:focus-visible      { outline: 1.5px solid rgba(156,61,187,.50); outline-offset: 2px; }
 
+    /* Lightweight Charts v4 injects <a href="tradingview..."> inside the chart container — hide it */
+    .price-chart a { display: none !important; }
+
     /* ══════════════════════════════════════════════════════════════
        PHASE 4C — STAT CELLS + SWAP BUTTON
        ══════════════════════════════════════════════════════════════ */
@@ -1960,7 +1963,7 @@
 </div>
 
 <!-- Scripts — bottom of body, exact order, never reorder -->
-<script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 <script src="fx.js"></script>
 <script src="state.js"></script>
 <script src="wallet.js"></script>
