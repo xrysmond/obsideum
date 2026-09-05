@@ -1453,7 +1453,8 @@
     }
     .swap-rate.has-rate { color: var(--bd); }
 
-    .swap-fee {
+    /* Gas estimate — revealed after quote resolves, hidden on reset */
+    .swap-gas {
       font-family: var(--fm);
       font-size: .52rem;
       letter-spacing: .32em;
@@ -1462,9 +1463,14 @@
       line-height: 1;
     }
 
-    .swap-fee-value {
+    /* UniswapX routing indicator — hidden until Dutch Auction route resolves */
+    .swap-routing {
+      font-family: var(--fm);
+      font-size: .52rem;
+      letter-spacing: .22em;
+      text-transform: uppercase;
       color: var(--em-2);
-      letter-spacing: .06em;
+      line-height: 1;
     }
 
     /* ── PRICE IMPACT — hidden until > 1% ── */

@@ -1,57 +1,39 @@
 /* ═══════════════════════════════════════════════════════════════════
    OBSIDEUM — swap.js
    Phase 5A — Swap UI (complete)
-   Phase 5B — Uniswap V3 direct: Quoter V2 · SwapRouter02 · MEV
+   Phase 5B — Uniswap Trading API: quotes · routing · execution · UniswapX
+   Flags 1–5 resolved. Docs-verified. Production grade.
    UNCHAINED9. Built by Waeven Xrysmond.
 ═══════════════════════════════════════════════════════════════════ */
 (function () {
   'use strict';
 
   /* ════════════════════════════════════════════════════════
-     CONTRACTS + CONSTANTS
+     CONSTANTS — Phase 5B
+
+     Trading API base URL verified at:
+     api-docs.uniswap.org/api-reference/swapping/quote
+     API key provided by Waeven Xrysmond.
+
+     No SWAP_ROUTER_02, QUOTER_V2, FLASHBOTS_RPC, DEFAULT_FEE,
+     FEE_FACTOR, or TRADING_API_ROUTER — all removed in Phase 5B.
+     Approval is handled by /check_approval endpoint (Permit2).
+     MEV protection is UniswapX routing, not Flashbots broadcast.
   ════════════════════════════════════════════════════════ */
-  var SWAP_ROUTER_02 = '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45';
-  var QUOTER_V2      = '0x61fFE014bA17989E743c5F6cB21bF9697530B21e';
-  var FLASHBOTS_RPC  = 'https://rpc.flashbots.net';
-  var DEFAULT_FEE    = 3000;   /* 0.30% — highest-liquidity pool tier       */
-  var FEE_FACTOR     = 0.9975; /* 0.25% interface fee — applied to display  */
+  var UNISWAP_API_KEY  = '7ydkXOSzAfaM4oimvBHhPEDsujSgqE_KTd3yhIaKGqs';
+  var UNISWAP_API_BASE = 'https://trade-api.gateway.uniswap.org/v1';
+
+  /* Request header — must be consistent across /quote, /check_approval, /swap, /order */
+  var UNISWAP_ROUTER_VERSION = '2.0';
 
   var WETH_ADDR = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
   var USDC_ADDR = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
 
   /* ════════════════════════════════════════════════════════
      ABIs
-
-     Quoter V2 — quoteExactInputSingle is called via callStatic.
-     It is NOT a view function (it touches state internally to
-     simulate the swap), but callStatic makes it read-only:
-     no gas, no tx, no wallet required.
-
-     SwapRouter02 (IV3SwapRouter interface) — exactInputSingle
-     does NOT include deadline in the struct. That is correct.
-     Deadline is set at the multicall wrapper level, which reverts
-     the entire batch if the block timestamp exceeds it.
-     This is the canonical pattern for SwapRouter02.
+     ERC-20 retained only for balance reads if needed in future.
+     All approval logic now handled by /check_approval endpoint.
   ════════════════════════════════════════════════════════ */
-  var QUOTER_V2_ABI = [
-    'function quoteExactInputSingle(' +
-    '  (address tokenIn, address tokenOut, uint256 amountIn,' +
-    '   uint24 fee, uint160 sqrtPriceLimitX96) params' +
-    ') external returns (' +
-    '  uint256 amountOut, uint160 sqrtPriceX96After,' +
-    '  uint32 initializedTicksCrossed, uint256 gasEstimate' +
-    ')'
-  ];
-
-  var SWAP_ROUTER_ABI = [
-    'function exactInputSingle(' +
-    '  (address tokenIn, address tokenOut, uint24 fee, address recipient,' +
-    '   uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96) params' +
-    ') external payable returns (uint256 amountOut)',
-    'function multicall(uint256 deadline, bytes[] data)' +
-    ' external payable returns (bytes[] results)'
-  ];
-
   var ERC20_ABI = [
     'function allowance(address owner, address spender) view returns (uint256)',
     'function approve(address spender, uint256 amount) returns (bool)'
@@ -59,9 +41,6 @@
 
   /* ════════════════════════════════════════════════════════
      MOCK DATA
-     Shown when STATE.tokenList / STATE.prices are not yet
-     populated (Phase 7A wires live Chainlink data).
-     Also used as display fallback when Quoter V2 fails.
   ════════════════════════════════════════════════════════ */
   var MOCK_TOKEN_LIST = [
     { address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', symbol: 'WETH', name: 'Wrapped Ether',  decimals: 18 },
@@ -83,15 +62,11 @@
 
   /* ════════════════════════════════════════════════════════
      SHARED SWAP STATE
-     One object shared between desktop panel + mobile view.
-     Both containers wire independent event handlers but read
-     from the same S — so flipping the token in one panel
-     does NOT reset the other.
   ════════════════════════════════════════════════════════ */
   var S = {
     fromAddress:  WETH_ADDR,
     toAddress:    USDC_ADDR,
-    pickerTarget: null   /* 'from' | 'to' — which side the picker is open for */
+    pickerTarget: null
   };
 
   /* ════════════════════════════════════════════════════════
@@ -136,21 +111,14 @@
 
   /* ════════════════════════════════════════════════════════
      PROVIDER + SIGNER
-
-     Phase 6A sets window.privyProvider (Privy EIP-1193).
-     Until then, window.ethereum is the fallback for testing.
-     Quotes are read-only — they work without any wallet via
-     the public RPC fallback below.
+     Phase 6A: window.privyProvider (Privy EIP-1193) slots in here.
+     MEV protection = UniswapX routing via Trading API — no Flashbots.
   ════════════════════════════════════════════════════════ */
-
-  /* Cached fallback — only instantiated once, only when needed */
   var _fallbackProvider = null;
 
   function getReadProvider() {
-    /* Prefer wallet provider — same network, better consistency */
     var pp = window.privyProvider || window.ethereum;
     if (pp) return new ethers.providers.Web3Provider(pp);
-    /* No wallet: use public RPC so quotes work before connection */
     if (!_fallbackProvider) {
       _fallbackProvider = new ethers.providers.JsonRpcProvider('https://eth.llamarpc.com');
     }
@@ -162,75 +130,165 @@
     return pp ? new ethers.providers.Web3Provider(pp) : null;
   }
 
-  /*
-   * getSwapSigner()
-   *
-   * MEV protection: when enabled + on Ethereum mainnet, the user signs
-   * with their normal wallet but the signed transaction is broadcast to
-   * Flashbots' private relay instead of the public mempool. This prevents
-   * front-running bots from seeing and sandwiching the transaction.
-   *
-   * signer.connect(fbProvider) routes broadcast through Flashbots while
-   * keeping signing in the user's wallet.
-   *
-   * Phase 6A: Privy's EIP-1193 provider enables proper Flashbots routing.
-   * The structure here is Phase 6A-ready — no changes to swap.js needed.
-   */
   async function getSwapSigner() {
-    var walletProvider = getWalletProvider();
-    if (!walletProvider) throw new Error('No wallet connected');
-    var signer = walletProvider.getSigner();
-    if (window.STATE && STATE.settings.mevProtection && STATE.network === 1) {
-      var fbProvider = new ethers.providers.JsonRpcProvider(FLASHBOTS_RPC);
-      return signer.connect(fbProvider);
+    var wp = getWalletProvider();
+    if (!wp) throw new Error('No wallet connected');
+    return wp.getSigner();
+  }
+
+  /* ════════════════════════════════════════════════════════
+     TRADING API — SHARED HEADERS
+  ════════════════════════════════════════════════════════ */
+  function apiHeaders() {
+    return {
+      'Content-Type':            'application/json',
+      'x-api-key':               UNISWAP_API_KEY,
+      'x-universal-router-version': UNISWAP_ROUTER_VERSION
+    };
+  }
+
+  /* ════════════════════════════════════════════════════════
+     ROUTE HELPERS — docs-verified field names
+
+     isDutchRoute: routing field = "DUTCH_V2" | "DUTCH_V3" | "DUTCH_LIMIT"
+     (all Dutch variants contain the string 'DUTCH')
+
+     extractAmountOut:
+       Classic → quoteResponse.quote.output.amount
+       Dutch   → quoteResponse.quote.orderInfo.outputs[0].endAmount
+                 (endAmount = guaranteed minimum after full decay)
+
+     extractGasUSD:
+       Classic → quoteResponse.quote.gasFeeUSD
+       Dutch   → quoteResponse.quote.classicGasUseEstimateUSD
+  ════════════════════════════════════════════════════════ */
+  function isDutchRoute(routing) {
+    return !!(routing && routing.indexOf('DUTCH') > -1);
+  }
+
+  function extractAmountOut(quoteResponse) {
+    if (!quoteResponse || !quoteResponse.quote) return null;
+    var q = quoteResponse.quote;
+
+    /* Classic: output.amount */
+    if (q.output && q.output.amount) return q.output.amount.toString();
+
+    /* Dutch: guaranteed minimum = endAmount of first output */
+    if (q.orderInfo && q.orderInfo.outputs && q.orderInfo.outputs.length) {
+      var out = q.orderInfo.outputs[0];
+      return (out.endAmount || out.startAmount || '').toString();
     }
-    return signer;
+
+    /* Fallback: aggregatedOutputs */
+    if (q.aggregatedOutputs && q.aggregatedOutputs.length) {
+      var ao = q.aggregatedOutputs[0];
+      return (ao.minAmount || ao.amount || '').toString();
+    }
+
+    return null;
+  }
+
+  function extractGasUSD(quoteResponse) {
+    if (!quoteResponse || !quoteResponse.quote) return null;
+    var q = quoteResponse.quote;
+    /* Classic uses gasFeeUSD; Dutch carries classicGasUseEstimateUSD */
+    return q.gasFeeUSD || q.classicGasUseEstimateUSD || null;
   }
 
   /* ════════════════════════════════════════════════════════
      PRICE IMPACT
-     Uses rawAmountOut from Quoter (before our 0.25% fee)
-     vs the spot rate from Chainlink/mock prices.
-     Impact = how much worse than spot the execution rate is.
+     Uses Trading API output vs Chainlink/mock spot — no fee applied.
   ════════════════════════════════════════════════════════ */
-  function calcPriceImpact(amountInBN, rawAmountOutBN, fromAddress, toAddress, decimalsIn, decimalsOut) {
+  function calcPriceImpact(amountInBN, amountOutBN, fromAddress, toAddress, decimalsIn, decimalsOut) {
     var p         = prices();
     var fromPrice = p[fromAddress] && p[fromAddress].usd;
     var toPrice   = p[toAddress]   && p[toAddress].usd;
     if (!fromPrice || !toPrice) return null;
 
-    var amountInNum  = parseFloat(ethers.utils.formatUnits(amountInBN,     decimalsIn));
-    var amountOutNum = parseFloat(ethers.utils.formatUnits(rawAmountOutBN, decimalsOut));
+    var inNum  = parseFloat(ethers.utils.formatUnits(amountInBN,  decimalsIn));
+    var outNum = parseFloat(ethers.utils.formatUnits(amountOutBN, decimalsOut));
 
-    var valueInUSD      = amountInNum * fromPrice;
-    var expectedAtSpot  = valueInUSD  / toPrice;
-    var impact          = (1 - amountOutNum / expectedAtSpot) * 100;
+    var valueInUSD     = inNum * fromPrice;
+    var expectedAtSpot = valueInUSD / toPrice;
+    var impact         = (1 - outNum / expectedAtSpot) * 100;
     return Math.max(0, parseFloat(impact.toFixed(2)));
   }
 
   /* ════════════════════════════════════════════════════════
-     QUOTER V2 — callStatic
-     Read-only. No gas. No wallet required.
-     Returns raw Uniswap amountOut before any interface fee.
+     UNISWAP TRADING API — QUOTE
+     Docs: api-docs.uniswap.org/api-reference/swapping/quote
+
+     Field notes (all verified):
+     · tokenInChainId / tokenOutChainId — NOT a single chainId
+     · swapper — required by API; use wallet if available
+     · routingPreference 'BEST_PRICE' — all routes including UniswapX
+     · MEV protection off: add protocols filter ['V2','V3','V4']
+       to exclude UniswapX. Still uses 'BEST_PRICE' routing.
+     · 'CLASSIC', 'BEST_PRICE_V2', 'UNISWAPX_V2' are deprecated.
+     · generatePermitAsTransaction: false — get Permit2 message
+       (sign only, no on-chain tx for permit). Docs recommend false.
+
+     swapper param: pass real wallet at execute time for valid
+     permitData. At display-quote time, pass wallet if connected
+     or a stable placeholder — output amounts are unaffected.
   ════════════════════════════════════════════════════════ */
-  async function getQuote(tokenIn, tokenOut, amountInBN) {
-    var provider = getReadProvider();
-    var quoter   = new ethers.Contract(QUOTER_V2, QUOTER_V2_ABI, provider);
-    var result   = await quoter.callStatic.quoteExactInputSingle({
-      tokenIn:           tokenIn,
-      tokenOut:          tokenOut,
-      amountIn:          amountInBN,
-      fee:               DEFAULT_FEE,
-      sqrtPriceLimitX96: ethers.BigNumber.from(0)
+  async function getQuote(tokenIn, tokenOut, amountInBN, swapper) {
+    var chainId  = (window.STATE && STATE.network) ? STATE.network : 1;
+    var slippage = (window.STATE ? STATE.settings.slippage : 0.5);
+
+    /* MEV protection: allow UniswapX when enabled on mainnet */
+    var useUniswapX = !!(window.STATE &&
+                         STATE.settings.mevProtection &&
+                         STATE.network === 1);
+
+    var body = {
+      type:                     'EXACT_INPUT',
+      amount:                   amountInBN.toString(),
+      tokenIn:                  tokenIn,
+      tokenOut:                 tokenOut,
+      tokenInChainId:           chainId,
+      tokenOutChainId:          chainId,
+      swapper:                  swapper || (window.STATE && STATE.wallet) || '0x0000000000000000000000000000000000000001',
+      slippageTolerance:        slippage,
+      routingPreference:        'BEST_PRICE',
+      generatePermitAsTransaction: false
+    };
+
+    /* Classic-only: restrict to on-chain protocols, exclude UniswapX */
+    if (!useUniswapX) {
+      body.protocols = ['V2', 'V3', 'V4'];
+    }
+
+    var res = await fetch(UNISWAP_API_BASE + '/quote', {
+      method:  'POST',
+      headers: apiHeaders(),
+      body:    JSON.stringify(body)
     });
-    /* Named return values from ABI, with index fallback */
-    return { amountOut: result.amountOut || result[0] };
+
+    if (!res.ok) {
+      var errData = {};
+      try { errData = await res.json(); } catch (_) {}
+      throw new Error('Trading API: ' + (errData.errorCode || errData.detail || res.statusText));
+    }
+
+    return await res.json();
+    /*
+     * Response shape (docs-verified):
+     *   .routing          → 'CLASSIC' | 'DUTCH_V2' | 'DUTCH_V3' | 'DUTCH_LIMIT' | ...
+     *   .permitData       → { domain, values, types } — Permit2 EIP-712 to sign
+     *   .quote            → route-specific execution payload (see extractAmountOut / /swap / /order)
+     *   .quote.output.amount         → Classic: output amount (raw string)
+     *   .quote.gasFeeUSD             → Classic: gas estimate USD
+     *   .quote.orderInfo.outputs[0].endAmount → Dutch: guaranteed minimum output
+     *   .quote.classicGasUseEstimateUSD       → Dutch: gas estimate USD
+     *   .quote.orderId    → Dutch: orderId for /order POST and polling
+     */
   }
 
   /* ════════════════════════════════════════════════════════
      MOCK QUOTE — display-only fallback
-     Used when Quoter V2 fails (RPC down, wrong network).
-     _isMock = true → execute button always opens wallet sheet.
+     Active when Trading API is unavailable or key is not set.
+     No fee. _isMock = true locks execute button.
   ════════════════════════════════════════════════════════ */
   function mockQuote(fromAddress, toAddress, amountStr) {
     var val = parseFloat(amountStr);
@@ -239,31 +297,121 @@
     var fp = p[fromAddress];
     var tp = p[toAddress];
     if (!fp || !tp) return null;
-    return { raw: (val * fp.usd / tp.usd) * FEE_FACTOR, impact: null };
+    return {
+      amountOut: (val * fp.usd / tp.usd).toFixed(6),
+      gasUSD:    '2.40',
+      routing:   'CLASSIC'
+    };
   }
 
   /* ════════════════════════════════════════════════════════
-     ERC-20 APPROVAL
-     Checks existing allowance first — only sends approve()
-     if insufficient. Approves max uint256 when autoApprove
-     is on, exact amount otherwise.
+     CHECK APPROVAL — Permit2 gate
+     Docs: api-docs.uniswap.org/guides/permit2
+
+     /check_approval verifies whether the Permit2 contract
+     has a sufficient ERC-20 allowance for the given token.
+     If not, it returns a fully-formed approval transaction.
+     The Permit2 contract manages time-limited allowances
+     to the Universal Router — replacing direct SwapRouter02
+     approvals. A token approved once stays approved
+     indefinitely (until revoked).
+
+     Non-critical: if this call fails the swap still proceeds.
+     The swap tx itself will revert if allowance is genuinely
+     missing — that error surfaces through onError normally.
   ════════════════════════════════════════════════════════ */
-  async function ensureAllowance(tokenAddress, amountNeeded, signer) {
-    var token     = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
-    var owner     = await signer.getAddress();
-    var allowance = await token.allowance(owner, SWAP_ROUTER_02);
-    if (allowance.gte(amountNeeded)) return; /* already sufficient */
-    var approveAmount = (window.STATE && STATE.settings.autoApprove)
-      ? ethers.constants.MaxUint256
-      : amountNeeded;
-    var tx = await token.approve(SWAP_ROUTER_02, approveAmount);
-    await tx.wait();
+  async function checkApprovalIfNeeded(tokenAddress, amountInBN, walletAddress, chainId, signer, callbacks) {
+    /* Native ETH never needs approval */
+    if (tokenAddress === '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE') return;
+
+    try {
+      var res = await fetch(UNISWAP_API_BASE + '/check_approval', {
+        method:  'POST',
+        headers: apiHeaders(),
+        body: JSON.stringify({
+          token:         tokenAddress,
+          amount:        amountInBN.toString(),
+          walletAddress: walletAddress,
+          chainId:       chainId
+        })
+      });
+
+      if (!res.ok) return; /* non-critical — let swap proceed */
+
+      var data = await res.json();
+
+      /* data.approval is null when Permit2 already has sufficient allowance */
+      if (data.approval && data.approval.to) {
+        callbacks.onApproving();
+        var tx = await signer.sendTransaction(data.approval);
+        await tx.wait();
+      }
+    } catch (_) {
+      /* non-critical — proceed anyway */
+    }
   }
 
   /* ════════════════════════════════════════════════════════
-     TRADE RECORDER
-     Prepends to STATE.trades and persists to localStorage.
-     Called by executeSwap() after tx.wait() confirms.
+     ORDER STATUS POLLER — Dutch Auction (UniswapX)
+     Docs: api-docs.uniswap.org/api-reference/swapping/get_uniswapx_order
+
+     Endpoint: GET /orders?orderId={id}
+     Response:  { orders: [{ orderStatus, txHash, settledAmounts }] }
+     Status values (lowercase): 'open', 'filled', 'cancelled', 'expired', 'error'
+     txHash: fill transaction hash (only present when filled)
+     settledAmounts[0].amountOut: actual output received (post-fill)
+
+     Returns { cancel } so wireCard can abort if user resets the card
+     before the Dutch Auction fills (Flag 5 — poll cancellation).
+  ════════════════════════════════════════════════════════ */
+  function pollOrderStatus(orderId, callbacks, timeout) {
+    var deadline  = Date.now() + (timeout || 180000); /* 3 min max — Dutch TTL ~60–180s */
+    var interval  = 2000;
+    var cancelled = false;
+
+    function cancel() { cancelled = true; }
+
+    function poll() {
+      if (cancelled) return;
+      if (Date.now() > deadline) {
+        callbacks.onError({ message: 'Order expired \u2014 try again' });
+        return;
+      }
+
+      fetch(UNISWAP_API_BASE + '/orders?orderId=' + encodeURIComponent(orderId), {
+        headers: { 'x-api-key': UNISWAP_API_KEY }
+      })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (cancelled) return;
+
+        var order  = data.orders && data.orders[0];
+        if (!order) { setTimeout(poll, interval); return; } /* no data yet — keep polling */
+
+        var status = order.orderStatus; /* 'open' | 'filled' | 'cancelled' | 'expired' | 'error' */
+
+        if (status === 'filled') {
+          callbacks.onFilled(order); /* passes full order object: txHash + settledAmounts */
+        } else if (status === 'cancelled' || status === 'expired' || status === 'error') {
+          callbacks.onError({ message: 'Order ' + status + ' \u2014 try again' });
+        } else {
+          /* 'open' — still in progress */
+          setTimeout(poll, interval);
+        }
+      })
+      .catch(function () {
+        /* Network error — retry silently until deadline */
+        if (!cancelled) setTimeout(poll, interval);
+      });
+    }
+
+    setTimeout(poll, interval);
+    return { cancel: cancel };
+  }
+
+  /* ════════════════════════════════════════════════════════
+     TRADE RECORDER — unchanged
+     No fee adjustment. API output is the exact received amount.
   ════════════════════════════════════════════════════════ */
   function recordTrade(hash, fromToken, toToken, fromAmountStr, toAmountNum, valueUSD) {
     var trade = {
@@ -284,60 +432,159 @@
   }
 
   /* ════════════════════════════════════════════════════════
-     EXECUTE SWAP
-     Flow: approve (if needed) → build calldata → multicall
-     with deadline → wait for receipt → recordTrade.
+     EXECUTE SWAP — two paths, one success state.
 
-     Deadline at the multicall level is the correct pattern for
-     SwapRouter02. The multicall function reverts the entire
-     batch if block.timestamp > deadline — same protection as
-     the old SwapRouter's per-struct deadline, but composable.
+     Both paths re-quote at execution time with the real wallet
+     address. This ensures permitData is valid for the signer
+     (display quotes may have used a placeholder swapper).
 
-     callbacks: { onApproving, onConfirming, onSuccess, onError }
+     ── Classic (V2 / V3 / V4 on-chain) ──────────────────
+     1.  Re-quote with real wallet → fresh permitData
+     2.  /check_approval → ERC20.approve(Permit2) if needed → callbacks.onApproving
+     3.  callbacks.onConfirming
+     4.  Sign freshQuote.permitData (EIP-712 Permit2 message)
+     5.  POST /swap → swap calldata { to, data, value, gasLimit, ... }
+     6.  signer.sendTransaction(swapData.swap)
+     7.  tx.wait() → recordTrade + callbacks.onSuccess(hash)
+
+     ── Dutch Auction (UniswapX V2 / V3) ─────────────────
+     1.  Re-quote with real wallet → Dutch order + permitData
+     2.  callbacks.onConfirming   ← no approve, no gas for approval
+     3.  Sign freshQuote.permitData (EIP-712 Permit2 for UniswapX reactor)
+     4.  POST /order { signature, quote: freshQuote.quote }
+     5.  orderId = freshQuote.quote.orderId (present in quote response)
+     6.  pollOrderStatus(orderId) → returns { cancel }
+     7.  callbacks.onPollStarted({ cancel }) → wireCard stores _pollCancel
+     8.  On fill: settledAmounts[0].amountOut → recordTrade → callbacks.onSuccess(txHash)
+     9.  On expiry: callbacks.onError
+
+     callbacks: { onApproving, onConfirming, onPollStarted, onSuccess, onError }
   ════════════════════════════════════════════════════════ */
-  async function executeSwap(tokenIn, tokenOut, amountInBN, rawAmountOutBN, fromToken, toToken, fromAmountStr, callbacks) {
+  async function executeSwap(displayQuote, tokenIn, amountInBN, fromToken, toToken, fromAmountStr, callbacks) {
     try {
-      var signer = await getSwapSigner();
+      var signer  = await getSwapSigner();
+      var wallet  = await signer.getAddress();
+      var chainId = (window.STATE && STATE.network) ? STATE.network : 1;
 
-      /* ── Slippage — applied to raw Uniswap output, not to display amount ── */
-      var slippageBps = Math.round((window.STATE ? STATE.settings.slippage : 0.5) * 100);
-      var minOut      = rawAmountOutBN.mul(10000 - slippageBps).div(10000);
-
-      /* ── Approval ── */
-      callbacks.onApproving();
-      await ensureAllowance(tokenIn, amountInBN, signer);
-
-      /* ── Build swap calldata ── */
+      /* Always re-quote with the real wallet address for valid permitData */
       callbacks.onConfirming();
-      var router    = new ethers.Contract(SWAP_ROUTER_02, SWAP_ROUTER_ABI, signer);
-      var recipient = (window.STATE && STATE.wallet) ? STATE.wallet : await signer.getAddress();
+      var freshQuote = await getQuote(tokenIn, toToken.address, amountInBN, wallet);
 
-      var callData = router.interface.encodeFunctionData('exactInputSingle', [{
-        tokenIn:           tokenIn,
-        tokenOut:          tokenOut,
-        fee:               DEFAULT_FEE,
-        recipient:         recipient,
-        amountIn:          amountInBN,
-        amountOutMinimum:  minOut,
-        sqrtPriceLimitX96: ethers.BigNumber.from(0)
-      }]);
+      var routing = freshQuote.routing;
+      var dutch   = isDutchRoute(routing);
+      var p       = prices();
 
-      /* ── Submit via multicall with deadline ── */
-      var deadline = Math.floor(Date.now() / 1000) +
-                     ((window.STATE ? STATE.settings.deadline : 20) * 60);
-      var tx      = await router.multicall(deadline, [callData]);
-      var receipt = await tx.wait();
+      /* ─── Dutch Auction ──────────────────────────────── */
+      if (dutch) {
+        /* Sign Permit2 EIP-712 message — no approve tx, no gas for it */
+        var pd        = freshQuote.permitData;
+        var signature = '';
+        if (pd && pd.domain) {
+          signature = await signer._signTypedData(pd.domain, pd.types, pd.values);
+        }
 
-      /* ── Record — use fee-adjusted display amount ── */
-      var feeAdjBN    = rawAmountOutBN.mul(9975).div(10000);
-      var toAmountNum = parseFloat(ethers.utils.formatUnits(feeAdjBN, toToken.decimals));
-      var p           = prices();
-      var fromPrice   = p[tokenIn] ? p[tokenIn].usd : 0;
-      var amountInNum = parseFloat(ethers.utils.formatUnits(amountInBN, fromToken.decimals));
+        /* Submit order */
+        var orderRes = await fetch(UNISWAP_API_BASE + '/order', {
+          method:  'POST',
+          headers: apiHeaders(),
+          body: JSON.stringify({
+            signature: signature,
+            quote:     freshQuote.quote
+          })
+        });
+        if (!orderRes.ok) {
+          var oErr = {};
+          try { oErr = await orderRes.json(); } catch (_) {}
+          throw new Error('Order submission failed: ' + (oErr.errorCode || orderRes.statusText));
+        }
 
-      recordTrade(receipt.transactionHash, fromToken, toToken, fromAmountStr, toAmountNum, amountInNum * fromPrice);
+        /* orderId is in the quote response — no need to parse POST /order response */
+        var orderId = freshQuote.quote.orderId;
+        if (!orderId) throw new Error('No orderId in quote response');
 
-      callbacks.onSuccess(receipt.transactionHash);
+        /* Start polling — wireCard stores the cancel handle via onPollStarted */
+        var handle = pollOrderStatus(orderId, {
+          onFilled: function (orderData) {
+            /* Use actual settled amount when available (post-fill truth) */
+            var rawOut = (orderData.settledAmounts && orderData.settledAmounts[0])
+              ? orderData.settledAmounts[0].amountOut
+              : extractAmountOut(freshQuote);
+
+            if (!rawOut) rawOut = '0';
+            var amountOutBN = ethers.BigNumber.from(rawOut.toString());
+            var toAmtNum    = parseFloat(ethers.utils.formatUnits(amountOutBN, toToken.decimals));
+            var fromAmtNum  = parseFloat(ethers.utils.formatUnits(amountInBN,  fromToken.decimals));
+            var fromPrice   = p[fromToken.address] ? p[fromToken.address].usd : 0;
+
+            recordTrade(orderData.txHash, fromToken, toToken, fromAmountStr, toAmtNum, fromAmtNum * fromPrice);
+            callbacks.onSuccess(orderData.txHash);
+          },
+          onError: function (err) {
+            callbacks.onError(err);
+          }
+        });
+
+        /* Expose cancel handle to wireCard (_pollCancel) */
+        if (typeof callbacks.onPollStarted === 'function') {
+          callbacks.onPollStarted(handle);
+        }
+
+      /* ─── Classic ────────────────────────────────────── */
+      } else {
+        /* Step 1: approval gate (parallel with nothing — must happen before signing) */
+        await checkApprovalIfNeeded(tokenIn, amountInBN, wallet, chainId, signer, callbacks);
+
+        /* Step 2: sign Permit2 message from fresh quote */
+        callbacks.onConfirming();
+        var pData = freshQuote.permitData;
+        var sig   = '';
+        if (pData && pData.domain) {
+          sig = await signer._signTypedData(pData.domain, pData.types, pData.values);
+        }
+
+        /* Step 3: POST /swap to get final unsigned calldata */
+        var swapBody = { quote: freshQuote.quote };
+        if (sig)   swapBody.signature   = sig;
+        if (pData) swapBody.permitData  = pData;
+
+        var swapRes = await fetch(UNISWAP_API_BASE + '/swap', {
+          method:  'POST',
+          headers: apiHeaders(),
+          body:    JSON.stringify(swapBody)
+        });
+        if (!swapRes.ok) {
+          var sErr = {};
+          try { sErr = await swapRes.json(); } catch (_) {}
+          throw new Error('Swap calldata failed: ' + (sErr.errorCode || swapRes.statusText));
+        }
+        var swapData = await swapRes.json();
+        var swapTx   = swapData.swap; /* { to, from, data, value, gasLimit, maxFeePerGas, maxPriorityFeePerGas } */
+
+        /* Step 4: send the transaction */
+        var txReq = {
+          to:   swapTx.to,
+          data: swapTx.data,
+          value: swapTx.value || '0x0'
+        };
+        /* Use API gas estimates when present — avoids estimateGas failure on complex routes */
+        if (swapTx.gasLimit)            txReq.gasLimit            = swapTx.gasLimit;
+        if (swapTx.maxFeePerGas)        txReq.maxFeePerGas        = swapTx.maxFeePerGas;
+        if (swapTx.maxPriorityFeePerGas) txReq.maxPriorityFeePerGas = swapTx.maxPriorityFeePerGas;
+
+        var tx      = await signer.sendTransaction(txReq);
+        var receipt = await tx.wait();
+
+        /* Step 5: record + succeed */
+        var rawOut      = extractAmountOut(freshQuote);
+        if (!rawOut) rawOut = '0';
+        var amountOutBN = ethers.BigNumber.from(rawOut.toString());
+        var toAmtNum    = parseFloat(ethers.utils.formatUnits(amountOutBN, toToken.decimals));
+        var fromAmtNum  = parseFloat(ethers.utils.formatUnits(amountInBN,  fromToken.decimals));
+        var fromPrice   = p[fromToken.address] ? p[fromToken.address].usd : 0;
+
+        recordTrade(receipt.transactionHash, fromToken, toToken, fromAmountStr, toAmtNum, fromAmtNum * fromPrice);
+        callbacks.onSuccess(receipt.transactionHash);
+      }
 
     } catch (err) {
       callbacks.onError(err);
@@ -345,7 +592,7 @@
   }
 
   /* ════════════════════════════════════════════════════════
-     LOGO FALLBACK
+     LOGO FALLBACK — unchanged
   ════════════════════════════════════════════════════════ */
   function logoFallback(img, fallbackEl, symbol) {
     if (!img) return;
@@ -360,6 +607,8 @@
 
   /* ════════════════════════════════════════════════════════
      BUILD SWAP CARD HTML
+     swap-fee removed. Replaced by #swap-gas + #swap-routing.
+     CSS for both lives in app.html (Flag 1 resolved there).
   ════════════════════════════════════════════════════════ */
   function buildSwapHTML(fromToken, toToken) {
     var p     = prices();
@@ -384,7 +633,6 @@
     }
 
     return (
-      /* ─── SWAP CARD ─── */
       '<div class="swap-card glass-p" id="swap-card">' +
 
         '<div>' +
@@ -416,7 +664,8 @@
 
         '<div class="swap-meta">' +
           '<span class="swap-rate" id="swap-rate">\u2014</span>' +
-          '<span class="swap-fee">Fee \u00b7 <span class="swap-fee-value">0.25%</span></span>' +
+          '<span class="swap-gas"     id="swap-gas"></span>' +
+          '<span class="swap-routing" id="swap-routing" hidden></span>' +
         '</div>' +
 
         '<div class="swap-impact" id="swap-impact" hidden>' +
@@ -434,7 +683,6 @@
 
       '</div>' +
 
-      /* ─── SUCCESS STATE ─── */
       '<div class="swap-success" id="swap-success" hidden>' +
         '<div class="success-ring">' +
           '<svg class="success-check" viewBox="0 0 48 48" width="32" height="32">' +
@@ -459,13 +707,25 @@
 
   /* ════════════════════════════════════════════════════════
      WIRE A MOUNTED CARD
-     All DOM queries scoped to `container` — safe for
-     simultaneous desktop right panel + mobile swap view.
+
+     Phase 5B data-flow changes from 5A:
+     · _lastQuote: { quoteResponse, amountInBN, amountOutBN, impact }
+     · _pollCancel: stores Dutch Auction poll cancel fn (Flag 5)
+     · clearMeta: resets #swap-gas / #swap-routing
+     · cancelPoll: aborts in-flight poll (Swap Again, token flip, error)
+     · updateOutput: extracts amountOut via extractAmountOut(),
+       shows gas via extractGasUSD(), shows routing tag for Dutch
+     · showQuoteResult: rate line has no FEE_FACTOR
+     · updateExecLabel: separates "CONNECT WALLET" from "NETWORK UNAVAILABLE"
+     · Execute handler: pre-disables button; wires onPollStarted callback
+     · Swap Again: cancelPoll() before card reset
   ════════════════════════════════════════════════════════ */
   function wireCard(container) {
     var fromInput  = container.querySelector('#from-amount');
     var toAmountEl = container.querySelector('#to-amount');
     var rateEl     = container.querySelector('#swap-rate');
+    var gasEl      = container.querySelector('#swap-gas');
+    var routingEl  = container.querySelector('#swap-routing');
     var impactEl   = container.querySelector('#swap-impact');
     var impactVal  = container.querySelector('#impact-value');
     var executeBtn = container.querySelector('#swap-execute');
@@ -476,11 +736,12 @@
 
     var _debounce   = null;
     var _rotation   = 0;
-    var _quoteSeq   = 0;     /* increments on every input — cancels stale responses */
-    var _isMock     = false; /* true → display only, execute blocked                */
-    var _lastQuote  = null;  /* { rawAmountOutBN, amountInBN, impact }              */
-    var _confirming = false; /* true → two-click high-impact gate is armed          */
+    var _quoteSeq   = 0;
+    var _isMock     = false;
+    var _lastQuote  = null;  /* { quoteResponse, amountInBN, amountOutBN, impact } */
+    var _confirming = false;
     var _confirmTmr = null;
+    var _pollCancel = null;  /* Dutch Auction poll cancel fn — Flag 5 */
 
     /* ── Logo fallbacks ── */
     ['from', 'to'].forEach(function (side) {
@@ -489,7 +750,18 @@
         (container.querySelector('#' + side + '-symbol') || {}).textContent || '?');
     });
 
-    /* ── Reset exec button ── */
+    /* ── Cancel any in-flight Dutch Auction poll ── */
+    function cancelPoll() {
+      if (_pollCancel) { _pollCancel(); _pollCancel = null; }
+    }
+
+    /* ── Clear gas + routing meta elements ── */
+    function clearMeta() {
+      if (gasEl)     gasEl.textContent = '';
+      if (routingEl) { routingEl.hidden = true; routingEl.textContent = ''; }
+    }
+
+    /* ── Reset exec button to base state ── */
     function resetExecBtn(label) {
       _confirming = false;
       clearTimeout(_confirmTmr);
@@ -497,11 +769,16 @@
       if (execLabel) execLabel.textContent = label || 'EXECUTE SWAP';
     }
 
-    /* ── Set exec button label based on current state ── */
+    /* ── Set exec button label based on connection + mock state ── */
     function updateExecLabel(impact) {
       resetExecBtn();
-      if (_isMock || !window.STATE || !STATE.connected) {
+      if (!window.STATE || !STATE.connected) {
+        /* Wallet not connected — prompt it */
         if (execLabel) execLabel.textContent = 'CONNECT WALLET';
+      } else if (_isMock) {
+        /* Connected but Trading API unavailable — lock, explain */
+        if (execLabel) execLabel.textContent = 'NETWORK UNAVAILABLE';
+        executeBtn.disabled = true;
       } else if (impact !== null && impact > 5 && !(window.STATE && STATE.settings.expertMode)) {
         if (execLabel) execLabel.textContent = 'EXECUTE SWAP (' + impact.toFixed(1) + '% IMPACT)';
       } else {
@@ -509,9 +786,8 @@
       }
     }
 
-    /* ── Display a resolved quote ── */
+    /* ── Render a resolved quote into the card ── */
     function showQuoteResult(amountOutNum, impact, fromTok, toTok) {
-      /* Output fade-in */
       toAmountEl.classList.remove('quoting');
       toAmountEl.style.transition = 'opacity 60ms var(--ease-in)';
       toAmountEl.style.opacity    = '0';
@@ -522,17 +798,17 @@
         toAmountEl.style.transition = 'opacity 120ms var(--ease-out)';
       }, 60);
 
-      /* Rate line */
+      /* Rate line — no fee, pure spot */
       var p  = prices();
       var fp = p[S.fromAddress];
       var tp = p[S.toAddress];
       if (fp && tp) {
         rateEl.textContent = '1 ' + fromTok.symbol + ' \u2248 ' +
-          fmtAmount((fp.usd / tp.usd) * FEE_FACTOR) + ' ' + toTok.symbol;
+          fmtAmount(fp.usd / tp.usd) + ' ' + toTok.symbol;
         rateEl.classList.add('has-rate');
       }
 
-      /* Price impact display */
+      /* Price impact */
       if (impact !== null && impact > 1) {
         impactEl.hidden = false;
         impactVal.textContent = impact.toFixed(2) + '%';
@@ -542,15 +818,14 @@
         impactEl.classList.remove('high');
       }
 
-      /* Exec button */
       executeBtn.disabled = false;
       updateExecLabel(impact);
     }
 
-    /* ── Async quote (Quoter V2, with mock fallback) ── */
+    /* ── Async quote on every input change ── */
     async function updateOutput() {
       var raw = fromInput ? fromInput.value.trim() : '';
-      var val = raw.replace(/\.$/, ''); /* trailing dot — valid while typing, strip for parse */
+      var val = raw.replace(/\.$/, '');
 
       if (!val || isNaN(parseFloat(val)) || parseFloat(val) <= 0) {
         toAmountEl.textContent = '\u2014';
@@ -559,6 +834,7 @@
         rateEl.textContent = '\u2014';
         rateEl.classList.remove('has-rate');
         impactEl.hidden = true;
+        clearMeta();
         executeBtn.disabled = true;
         _lastQuote = null;
         _isMock    = false;
@@ -570,7 +846,7 @@
       var toTok   = getToken(S.toAddress);
       if (!fromTok || !toTok) return;
 
-      /* Parse — guard excess decimals (USDC has 6, input might have more) */
+      /* Parse — guard against excess decimals (e.g. USDC = 6) */
       var amountInBN;
       try {
         amountInBN = ethers.utils.parseUnits(val, fromTok.decimals);
@@ -582,56 +858,84 @@
         catch (__) { return; }
       }
 
-      /* Quoting indicator */
       toAmountEl.classList.add('quoting');
       toAmountEl.style.opacity = '0.35';
 
-      /* Sequence stamp — discard any response that isn't the latest */
       var seq = ++_quoteSeq;
 
       try {
-        var quote = await getQuote(S.fromAddress, S.toAddress, amountInBN);
-        if (seq !== _quoteSeq) return; /* newer request in flight — discard */
+        /* Display quote — use wallet if connected, placeholder if not */
+        var displayWallet = (window.STATE && STATE.wallet) ? STATE.wallet : null;
+        var quoteResponse = await getQuote(S.fromAddress, S.toAddress, amountInBN, displayWallet);
+        if (seq !== _quoteSeq) return; /* stale — newer in flight */
 
-        var feeAdjBN     = quote.amountOut.mul(9975).div(10000);
-        var amountOutNum = parseFloat(ethers.utils.formatUnits(feeAdjBN, toTok.decimals));
-        var impact       = calcPriceImpact(amountInBN, quote.amountOut,
+        /* Extract amountOut */
+        var rawOut = extractAmountOut(quoteResponse);
+        if (!rawOut || rawOut === '0') throw new Error('No output amount in quote');
+
+        var amountOutBN  = ethers.BigNumber.from(rawOut);
+        var amountOutNum = parseFloat(ethers.utils.formatUnits(amountOutBN, toTok.decimals));
+        var impact       = calcPriceImpact(amountInBN, amountOutBN,
                              S.fromAddress, S.toAddress,
                              fromTok.decimals, toTok.decimals);
 
-        _lastQuote = { rawAmountOutBN: quote.amountOut, amountInBN: amountInBN, impact: impact };
-        _isMock    = false;
+        _lastQuote = {
+          quoteResponse: quoteResponse,
+          amountInBN:    amountInBN,
+          amountOutBN:   amountOutBN,
+          impact:        impact
+        };
+        _isMock = false;
+
+        /* Gas display — revealed after quote resolves */
+        var gasUSD = extractGasUSD(quoteResponse);
+        if (gasEl) {
+          gasEl.textContent = gasUSD
+            ? 'Gas \u00b7 ~$' + parseFloat(gasUSD).toFixed(2)
+            : '';
+        }
+
+        /* UniswapX routing tag */
+        var dutch = isDutchRoute(quoteResponse.routing);
+        if (routingEl) {
+          routingEl.hidden      = !dutch;
+          routingEl.textContent = dutch ? 'via UniswapX' : '';
+        }
 
         showQuoteResult(amountOutNum, impact, fromTok, toTok);
 
       } catch (_err) {
         if (seq !== _quoteSeq) return;
 
-        /* Quoter failed — show mock for visual continuity, block execute */
+        /* API unavailable — mock fallback, execute locked */
         var mq = mockQuote(S.fromAddress, S.toAddress, val);
         _lastQuote = null;
         _isMock    = true;
 
         if (mq) {
-          showQuoteResult(mq.raw, mq.impact, fromTok, toTok);
+          showQuoteResult(parseFloat(mq.amountOut), null, fromTok, toTok);
+          if (gasEl)     gasEl.textContent = 'Gas \u00b7 ~$' + mq.gasUSD;
+          if (routingEl) { routingEl.hidden = true; routingEl.textContent = ''; }
+          /* updateExecLabel re-locks via _isMock = true */
+          updateExecLabel(null);
         } else {
           toAmountEl.classList.remove('quoting');
           toAmountEl.style.opacity = '1';
+          clearMeta();
           executeBtn.disabled = true;
+          updateExecLabel(null);
         }
       }
     }
 
-    /* ── Input handler — debounce 300ms ── */
+    /* ── Input event: sanitize + debounce ── */
     if (fromInput) {
       fromInput.addEventListener('input', function () {
-        /* Sanitize — numeric only, single decimal point */
-        var v = fromInput.value.replace(/[^\d.]/g, '');
+        var v     = fromInput.value.replace(/[^\d.]/g, '');
         var parts = v.split('.');
         if (parts.length > 2) v = parts[0] + '.' + parts.slice(1).join('');
         if (v !== fromInput.value) fromInput.value = v;
 
-        /* Invalidate immediately — prevents stale execute on fast typing */
         _lastQuote = null;
         _isMock    = false;
         executeBtn.disabled = true;
@@ -639,7 +943,6 @@
         clearTimeout(_debounce);
         _debounce = setTimeout(updateOutput, 300);
       });
-
       fromInput.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { clearTimeout(_debounce); updateOutput(); }
       });
@@ -675,7 +978,6 @@
         dirBtn.style.transition = 'transform 300ms var(--ease-spr)';
         dirBtn.style.transform  = 'rotate(' + _rotation + 'deg)';
 
-        /* Carry the last output into the new input field */
         var prevOut = toAmountEl.textContent.replace(/[^0-9.]/g, '');
         if (fromInput && prevOut && !isNaN(parseFloat(prevOut))) {
           fromInput.value = prevOut;
@@ -683,9 +985,11 @@
 
         refreshCardSelectors(container);
         refreshCardBalances(container);
+        cancelPoll();
         _lastQuote = null;
         _isMock    = false;
         executeBtn.disabled = true;
+        clearMeta();
         resetExecBtn();
         clearTimeout(_debounce);
         _debounce = setTimeout(updateOutput, 60);
@@ -697,7 +1001,6 @@
       swapCard.hidden = true;
       swapSucc.hidden = false;
 
-      /* Checkmark draw-in */
       var line = swapSucc.querySelector('.check-line');
       if (line) {
         requestAnimationFrame(function () {
@@ -706,7 +1009,6 @@
         });
       }
 
-      /* Typewriter hash at 18ms/char */
       var hashEl = swapSucc.querySelector('#success-hash');
       if (hashEl) {
         hashEl.textContent = '';
@@ -718,7 +1020,6 @@
         }, 18);
       }
 
-      /* Etherscan link + Swap Again fade in after typewriter completes */
       setTimeout(function () {
         var ethEl   = swapSucc.querySelector('#success-etherscan');
         var againEl = swapSucc.querySelector('#swap-again');
@@ -741,23 +1042,20 @@
       executeBtn.addEventListener('click', function () {
         if (executeBtn.disabled) return;
 
-        /* No wallet or mock quote — open wallet sheet */
-        if (!window.STATE || !STATE.connected || _isMock || !_lastQuote) {
+        /* Wallet not connected → open sheet */
+        if (!window.STATE || !STATE.connected) {
           if (typeof openWalletSheet === 'function') openWalletSheet();
           else if (typeof showToast  === 'function') showToast('Connect your wallet to swap', 'tok');
           return;
         }
 
+        /* API unavailable (mock) → lock, no-op */
+        if (_isMock || !_lastQuote) return;
+
         var impact     = _lastQuote.impact;
         var expertMode = window.STATE && STATE.settings.expertMode;
 
-        /*
-         * Two-click high-impact gate.
-         * When impact > 5% and expert mode is off, first click arms the gate:
-         * button turns red via .confirm class, label shows impact %.
-         * Second click (or any click during the 2s window) executes.
-         * If no second click within 2s, gate resets automatically.
-         */
+        /* Two-click high-impact gate */
         if (impact !== null && impact > 5 && !expertMode && !_confirming) {
           _confirming = true;
           executeBtn.classList.add('confirm');
@@ -770,47 +1068,52 @@
           return;
         }
 
-        /* All gates passed — execute */
+        /* All gates passed — disable immediately, prevent double-fire */
+        executeBtn.disabled = true;
+        executeBtn.classList.remove('confirm');
+        executeBtn.classList.add('confirming');
+        if (execLabel) execLabel.textContent = 'CONFIRMING\u2026';
+
         var fromTok    = getToken(S.fromAddress);
         var toTok      = getToken(S.toAddress);
         var fromAmount = fromInput ? fromInput.value.trim() : '0';
 
         executeSwap(
+          _lastQuote.quoteResponse,
           S.fromAddress,
-          S.toAddress,
           _lastQuote.amountInBN,
-          _lastQuote.rawAmountOutBN,
           fromTok,
           toTok,
           fromAmount,
           {
             onApproving: function () {
-              executeBtn.disabled = true;
-              executeBtn.classList.remove('confirm');
-              executeBtn.classList.add('confirming');
+              /* Button already disabled above — update label only */
               if (execLabel) execLabel.textContent = 'APPROVING\u2026';
             },
             onConfirming: function () {
               if (execLabel) execLabel.textContent = 'CONFIRMING\u2026';
             },
+            onPollStarted: function (handle) {
+              /* Store cancel fn — lets Swap Again abort the Dutch poll */
+              _pollCancel = handle.cancel;
+            },
             onSuccess: function (txHash) {
+              _pollCancel = null;
               playSuccess(txHash);
             },
             onError: function (err) {
+              _pollCancel = null;
               executeBtn.disabled = false;
               executeBtn.classList.remove('confirming', 'confirm');
               _confirming = false;
 
-              /* User rejected in wallet (code 4001) vs actual failure */
               var msg = (err && err.code === 4001)
                 ? 'Transaction rejected'
-                : 'Swap failed \u2014 try again';
+                : (err && err.message) || 'Swap failed \u2014 try again';
               if (typeof showToast === 'function') showToast(msg, 'terr');
 
-              /* Restore label */
               updateExecLabel(_lastQuote ? _lastQuote.impact : null);
 
-              /* Shake the card */
               if (swapCard) {
                 swapCard.classList.add('shake');
                 setTimeout(function () { swapCard.classList.remove('shake'); }, 400);
@@ -825,6 +1128,9 @@
     var swapAgain = swapSucc ? swapSucc.querySelector('#swap-again') : null;
     if (swapAgain) {
       swapAgain.addEventListener('click', function () {
+        /* Cancel any in-flight Dutch poll before resetting */
+        cancelPoll();
+
         var line  = swapSucc.querySelector('.check-line');
         var ethEl = swapSucc.querySelector('#success-etherscan');
         var ag    = swapSucc.querySelector('#swap-again');
@@ -842,6 +1148,7 @@
         rateEl.textContent = '\u2014';
         rateEl.classList.remove('has-rate');
         impactEl.hidden = true;
+        clearMeta();
         _lastQuote  = null;
         _isMock     = false;
         _confirming = false;
@@ -854,7 +1161,7 @@
   }
 
   /* ════════════════════════════════════════════════════════
-     CARD STATE HELPERS
+     CARD STATE HELPERS — unchanged
   ════════════════════════════════════════════════════════ */
   function refreshCardSelectors(container) {
     ['from', 'to'].forEach(function (side) {
@@ -886,12 +1193,11 @@
   }
 
   /* ════════════════════════════════════════════════════════
-     MOUNT SWAP CARD
+     MOUNT SWAP CARD — unchanged
   ════════════════════════════════════════════════════════ */
   function mountSwapCard(container) {
     if (!container) return;
 
-    /* Inherit token context when navigating from token detail panel */
     var preToken = window.STATE && STATE.token;
     if (preToken && preToken !== S.toAddress) {
       S.fromAddress = preToken;
@@ -906,7 +1212,6 @@
     var fromToken = getToken(S.fromAddress) || tokenList()[0];
     var toToken   = getToken(S.toAddress)   || tokenList()[5] || tokenList()[1];
 
-    /* Brief skeleton flash before real card renders */
     container.innerHTML =
       '<div class="swap-view">' +
         '<div class="swap-skeleton">' +
@@ -924,7 +1229,7 @@
   }
 
   /* ════════════════════════════════════════════════════════
-     TOKEN PICKER
+     TOKEN PICKER — unchanged
   ════════════════════════════════════════════════════════ */
   var pickerOverlay = document.getElementById('token-picker-overlay');
   var pickerSearch  = document.getElementById('token-picker-search');
@@ -957,7 +1262,6 @@
         var side  = S.pickerTarget;
         var prev  = side === 'from' ? S.fromAddress : S.toAddress;
         var other = side === 'from' ? S.toAddress   : S.fromAddress;
-        /* If picking the token that's already on the other side — swap them */
         if (token.address === other) {
           if (side === 'from') { S.fromAddress = token.address; S.toAddress   = prev; }
           else                 { S.toAddress   = token.address; S.fromAddress = prev; }
@@ -1028,7 +1332,6 @@
     pickerSearch.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeTokenPicker(); });
   }
 
-  /* After token pick: update both panels and re-fire quote */
   function refreshAllCards() {
     [
       document.getElementById('right-panel-content'),
@@ -1043,10 +1346,8 @@
   }
 
   /* ════════════════════════════════════════════════════════
-     STATE EVENT LISTENERS
+     STATE EVENT LISTENERS — unchanged
   ════════════════════════════════════════════════════════ */
-
-  /* Desktop right panel */
   document.addEventListener('panel:render', function (e) {
     var container = document.getElementById('right-panel-content');
     if (e.detail === 'swap') {
@@ -1057,14 +1358,12 @@
     }
   });
 
-  /* Mobile swap view */
   document.addEventListener('state:mobileView', function (e) {
     if (e.detail !== 'swap') return;
     var container = document.getElementById('mobile-swap');
     if (container) mountSwapCard(container);
   });
 
-  /* Live price update — refresh balance/price labels only, no re-render */
   document.addEventListener('state:prices', function () {
     [
       document.getElementById('right-panel-content'),
