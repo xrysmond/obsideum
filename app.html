@@ -60,9 +60,9 @@
     }
 
     #sidebar {
-      background: rgba(7,7,9,.92);
-      -webkit-backdrop-filter: blur(28px) saturate(160%) brightness(.96);
-      backdrop-filter: blur(28px) saturate(160%) brightness(.96);
+      background: rgba(7,7,9,.40);
+      -webkit-backdrop-filter: blur(26px) saturate(175%);
+      backdrop-filter: blur(26px) saturate(175%);
       border: none;
       border-right: 1px solid rgba(156,61,187,.22);
       box-shadow:
@@ -295,9 +295,9 @@
       height: 56px;
       flex-shrink: 0;
       border-bottom: 1px solid rgba(156,61,187,.18);
-      background: rgba(7,7,9,.80);
-      -webkit-backdrop-filter: blur(24px) saturate(140%) brightness(.97);
-      backdrop-filter: blur(24px) saturate(140%) brightness(.97);
+      background: rgba(7,7,9,.40);
+      -webkit-backdrop-filter: blur(26px) saturate(175%);
+      backdrop-filter: blur(26px) saturate(175%);
     }
 
     .mobile-content {
@@ -318,9 +318,9 @@
       height: 62px;
       flex-shrink: 0;
       margin: 0 12px calc(env(safe-area-inset-bottom, 0px) + 12px);
-      background: rgba(7,7,9,.92);
-      -webkit-backdrop-filter: blur(28px) saturate(160%) brightness(.96);
-      backdrop-filter: blur(28px) saturate(160%) brightness(.96);
+      background: rgba(7,7,9,.40);
+      -webkit-backdrop-filter: blur(26px) saturate(175%);
+      backdrop-filter: blur(26px) saturate(175%);
       border: 1px solid rgba(156,61,187,.22);
       box-shadow:
         0 0 0 0.5px rgba(156,61,187,.12),
@@ -1792,6 +1792,531 @@
       line-height: 1;
     }
 
+    /* ══════════════════════════════════════════════════════════════
+       PHASE 6C — MOBILE WALLET PILL
+       ══════════════════════════════════════════════════════════════ */
+
+    .mobile-wallet-pill {
+      height: 30px;
+      padding: 0 13px;
+      border-radius: 15px;
+      border: 1px solid var(--em-lo);
+      color: var(--em-2);
+      background: rgba(156,61,187,.06);
+      font-family: var(--fm);
+      font-size: .58rem;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 76px;
+      max-width: 120px;
+      flex-shrink: 0;
+      cursor: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition:
+        border-color  140ms var(--ease-std),
+        background    140ms var(--ease-std),
+        color         140ms var(--ease-std),
+        box-shadow    200ms var(--ease-std);
+    }
+    .mobile-wallet-pill:hover {
+      border-color: var(--em);
+      background: rgba(156,61,187,.10);
+      box-shadow: 0 0 14px rgba(156,61,187,.16);
+    }
+    .mobile-wallet-pill:active {
+      transform: scale(.93);
+      transition: transform 80ms var(--ease-spr);
+    }
+    .mobile-wallet-pill:focus-visible {
+      outline: 1.5px solid rgba(156,61,187,.50);
+      outline-offset: 2px;
+    }
+    .mobile-wallet-pill.disconnected {
+      border-color: var(--trace);
+      color: var(--dim);
+      background: transparent;
+    }
+    .mobile-wallet-pill.disconnected:hover {
+      border-color: var(--em-lo);
+      color: var(--em-2);
+      background: rgba(156,61,187,.04);
+      box-shadow: none;
+    }
+    #mobile-wallet-label {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 108px;
+      pointer-events: none;
+    }
+
+    /* ══════════════════════════════════════════════════════════════
+       PHASE 6C — WALLET BOTTOM SHEET
+       ══════════════════════════════════════════════════════════════ */
+
+    /* Dim overlay — behind sheet, above everything else */
+    #wallet-sheet-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.62);
+      z-index: 399;
+      opacity: 0;
+      transition: opacity 240ms var(--ease-out);
+      -webkit-backdrop-filter: blur(2px);
+      backdrop-filter: blur(2px);
+    }
+
+    /* Sheet — slides up from bottom, glass-m */
+    #wallet-sheet {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 400;
+      border-radius: 20px 20px 0 0;
+      max-height: 80vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      transform: translateY(100%);
+      transition: transform 320ms var(--ease-spr);
+      /* ultra-thin scrollbar */
+      scrollbar-width: thin;
+      scrollbar-color: rgba(156,61,187,.18) transparent;
+    }
+    #wallet-sheet::-webkit-scrollbar       { width: 2px; }
+    #wallet-sheet::-webkit-scrollbar-track { background: transparent; }
+    #wallet-sheet::-webkit-scrollbar-thumb { background: rgba(156,61,187,.18); border-radius: 1px; }
+
+    #wallet-sheet.panel-visible { transform: translateY(0); }
+
+    /* Drag handle */
+    .wsh-handle {
+      width: 34px;
+      height: 3px;
+      background: var(--trace);
+      border-radius: 2px;
+      margin: 14px auto 4px;
+      flex-shrink: 0;
+      pointer-events: none;
+    }
+
+    /* Section — consistent padding + divider */
+    .wsh-section {
+      padding: 16px 20px 18px;
+      border-bottom: 1px solid var(--trace);
+    }
+    .wsh-section:last-of-type { border-bottom: none; }
+
+    /* Eyebrow label */
+    .wsh-label {
+      display: block;
+      font-family: var(--fm);
+      font-size: .50rem;
+      letter-spacing: .52em;
+      text-transform: uppercase;
+      color: var(--dim);
+      margin-bottom: 10px;
+      line-height: 1;
+      opacity: .70;
+    }
+
+    /* ── Identity section ── */
+    .wsh-id-addr {
+      font-family: var(--fm);
+      font-size: .80rem;
+      letter-spacing: .04em;
+      color: var(--dim);
+      line-height: 1.3;
+      margin-bottom: 12px;
+    }
+
+    .wsh-subname {
+      font-family: var(--fm);
+      font-size: .92rem;
+      letter-spacing: .03em;
+      color: var(--em-2);
+      line-height: 1.2;
+      margin-bottom: 5px;
+    }
+
+    .wsh-subname-note {
+      font-family: var(--fm);
+      font-size: .58rem;
+      letter-spacing: .22em;
+      text-transform: uppercase;
+      color: var(--dim);
+      line-height: 1;
+      opacity: .65;
+    }
+
+    /* Claim prompt */
+    .wsh-claim-prompt {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      background: transparent;
+      border: none;
+      color: var(--em-2);
+      font-family: var(--fm);
+      font-size: .66rem;
+      letter-spacing: .06em;
+      padding: 0;
+      cursor: none;
+      -webkit-tap-highlight-color: transparent;
+      opacity: .68;
+      transition: opacity 140ms var(--ease-std);
+      text-align: left;
+    }
+    .wsh-claim-prompt:hover  { opacity: 1; }
+    .wsh-claim-prompt:active { opacity: .50; }
+    .wsh-claim-arrow {
+      display: inline-block;
+      transition: transform 220ms var(--ease-spr);
+      flex-shrink: 0;
+    }
+    .wsh-claim-prompt.expanded .wsh-claim-arrow { transform: rotate(90deg); }
+
+    /* Claim form — appears below prompt on expand */
+    .wsh-claim-form {
+      margin-top: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      animation: wshFormIn 220ms var(--ease-spr);
+    }
+    @keyframes wshFormIn {
+      from { opacity: 0; transform: translateY(-5px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ENS input + suffix row */
+    .wsh-ens-row {
+      display: flex;
+      align-items: stretch;
+    }
+
+    .wsh-ens-input {
+      flex: 1;
+      min-width: 0;
+      background: rgba(156,61,187,.04) !important;
+      border: 1px solid rgba(156,61,187,.14) !important;
+      border-right: none !important;
+      border-radius: 7px 0 0 7px !important;
+      font-family: var(--fm) !important;
+      font-size: .76rem !important;
+      letter-spacing: .02em !important;
+      color: var(--br) !important;
+      padding: 9px 11px !important;
+      box-shadow: none !important;
+      outline: none !important;
+      transition: border-color 140ms var(--ease-std) !important;
+      caret-color: var(--em-2) !important;
+    }
+    .wsh-ens-input:focus {
+      border-color: rgba(156,61,187,.32) !important;
+      background: rgba(156,61,187,.06) !important;
+    }
+    .wsh-ens-input::placeholder {
+      color: rgba(222,228,244,.18);
+      opacity: 1;
+    }
+
+    .wsh-ens-suffix {
+      display: flex;
+      align-items: center;
+      padding: 0 11px;
+      font-family: var(--fm);
+      font-size: .66rem;
+      letter-spacing: .02em;
+      color: var(--dim);
+      background: rgba(156,61,187,.03);
+      border: 1px solid rgba(156,61,187,.14);
+      border-left: none;
+      border-radius: 0 7px 7px 0;
+      white-space: nowrap;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+
+    /* Availability status line */
+    .wsh-ens-status {
+      font-family: var(--fm);
+      font-size: .62rem;
+      letter-spacing: .08em;
+      min-height: 14px;
+      line-height: 1;
+      transition: opacity 160ms var(--ease-std);
+    }
+    .wsh-ens-status.available { color: var(--up); }
+    .wsh-ens-status.taken     { color: var(--dn); }
+    .wsh-ens-status.checking  { color: var(--dim); }
+
+    .wsh-register-btn {
+      width: 100%;
+      padding: 12px 0;
+      text-align: center;
+    }
+    .wsh-register-btn:disabled {
+      opacity: .30;
+      pointer-events: none;
+    }
+
+    /* ── Address section ── */
+    .wsh-address-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .wsh-full-addr {
+      font-family: var(--fm);
+      font-size: .70rem;
+      letter-spacing: .03em;
+      color: var(--bd);
+      word-break: break-all;
+      line-height: 1.55;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .wsh-copy-btn {
+      font-family: var(--fm);
+      font-size: .50rem;
+      letter-spacing: .28em;
+      padding: 6px 10px;
+      flex-shrink: 0;
+      color: var(--dim);
+      border: 1px solid var(--trace);
+      background: transparent;
+      cursor: none;
+      -webkit-tap-highlight-color: transparent;
+      transition:
+        color        120ms var(--ease-std),
+        border-color 120ms var(--ease-std),
+        background   120ms var(--ease-std);
+    }
+    .wsh-copy-btn:hover { color: var(--bd); border-color: rgba(156,61,187,.22); }
+    .wsh-copy-btn.copied {
+      color: var(--up) !important;
+      border-color: rgba(52,211,153,.30) !important;
+      background: rgba(52,211,153,.05) !important;
+    }
+
+    /* ── Trades section ── */
+    .wsh-trade-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--trace);
+    }
+    .wsh-trade-row:last-child { border-bottom: none; }
+
+    .wsh-trade-pair {
+      font-family: var(--fm);
+      font-size: .74rem;
+      letter-spacing: .02em;
+      color: var(--br);
+      line-height: 1;
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .wsh-trade-amount {
+      font-family: var(--fm);
+      font-size: .62rem;
+      letter-spacing: .03em;
+      color: var(--dim);
+      line-height: 1;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .wsh-trade-time {
+      font-family: var(--fm);
+      font-size: .56rem;
+      letter-spacing: .10em;
+      text-transform: uppercase;
+      color: var(--dim);
+      line-height: 1;
+      white-space: nowrap;
+      flex-shrink: 0;
+      opacity: .60;
+    }
+
+    .wsh-trade-link {
+      font-size: .68rem;
+      color: var(--em-2);
+      text-decoration: none;
+      opacity: .50;
+      flex-shrink: 0;
+      transition: opacity 120ms var(--ease-std);
+      line-height: 1;
+    }
+    .wsh-trade-link:hover { opacity: 1; }
+
+    .wsh-view-all-btn {
+      width: 100%;
+      margin-top: 14px;
+      padding: 10px 0;
+      text-align: center;
+      font-size: .54rem;
+      letter-spacing: .30em;
+      color: var(--em-2);
+      border: 1px solid var(--em-lo);
+      background: transparent;
+      cursor: none;
+      -webkit-tap-highlight-color: transparent;
+      transition: border-color 120ms var(--ease-std), background 120ms var(--ease-std);
+    }
+    .wsh-view-all-btn:hover { border-color: var(--em); background: rgba(156,61,187,.06); }
+
+    /* ── Network section ── */
+    .wsh-network-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .wsh-network-left {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .wsh-net-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: rgba(156,61,187,.30);
+      transition: background 300ms var(--ease-std), box-shadow 300ms var(--ease-std);
+    }
+    .wsh-net-dot.ok {
+      background: var(--up);
+      box-shadow: 0 0 6px 1px rgba(52,211,153,.40);
+    }
+    .wsh-net-dot.warn {
+      background: var(--warn);
+      box-shadow: 0 0 6px 1px rgba(220,180,40,.40);
+    }
+
+    .wsh-net-name {
+      font-family: var(--fm);
+      font-size: .76rem;
+      letter-spacing: .04em;
+      color: var(--bd);
+      line-height: 1;
+    }
+    .wsh-net-name.warn { color: var(--warn); }
+
+    .wsh-switch-btn {
+      font-family: var(--fm);
+      font-size: .50rem;
+      letter-spacing: .24em;
+      padding: 6px 10px;
+      color: var(--em-2);
+      border: 1px solid var(--em-lo);
+      background: transparent;
+      cursor: none;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-user-select: none;
+      user-select: none;
+      transition:
+        border-color 120ms var(--ease-std),
+        background   120ms var(--ease-std);
+    }
+    .wsh-switch-btn:hover    { border-color: var(--em); background: rgba(156,61,187,.06); }
+    .wsh-switch-btn:active   { opacity: .65; transition: opacity 80ms var(--ease-spr); }
+    .wsh-switch-btn:disabled { opacity: .28; pointer-events: none; }
+
+    /* ── Connected via section ── */
+    .wsh-via-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .wsh-via-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: rgba(156,61,187,.45);
+      flex-shrink: 0;
+    }
+
+    .wsh-via-name {
+      font-family: var(--fm);
+      font-size: .72rem;
+      letter-spacing: .04em;
+      color: var(--dim);
+      line-height: 1;
+    }
+
+    /* ── State A — connect section ── */
+    .wsh-connect-section {
+      padding: 28px 20px 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .wsh-connect-eyebrow {
+      font-family: var(--fm);
+      font-size: .56rem;
+      letter-spacing: .44em;
+      text-transform: uppercase;
+      color: var(--dim);
+      line-height: 1;
+    }
+
+    .wsh-connect-btn {
+      width: 100%;
+      max-width: 300px;
+      padding: 17px 0;
+      text-align: center;
+      font-size: .72rem;
+      letter-spacing: .34em;
+    }
+
+    /* ── Disconnect button — full width, bottom of sheet ── */
+    .wsh-disconnect-btn {
+      display: block;
+      width: calc(100% - 40px);
+      margin: 10px 20px;
+      margin-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+    }
+    .wsh-disconnect-btn .btn-inner {
+      width: 100%;
+      min-width: 0;
+      padding: 14px 0;
+      justify-content: center;
+    }
+
+    /* Shake on invalid ENS input */
+    @keyframes wsh-shake {
+      0%,100% { transform: translateX(0); }
+      20%      { transform: translateX(-5px); }
+      40%      { transform: translateX(5px); }
+      60%      { transform: translateX(-3px); }
+      80%      { transform: translateX(3px); }
+    }
+    .wsh-shake { animation: wsh-shake 380ms var(--ease-std); }
+
   </style>
 </head>
 <body>
@@ -1899,12 +2424,9 @@
     </button>
     <span class="mobile-wordmark">OBSIDEUM</span>
     <div class="mobile-top-actions">
-      <button id="mobile-history-btn" class="mobile-icon-btn" aria-label="History">
-        <svg viewBox="0 0 20 20" width="20" height="20"
-          fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="10" cy="10" r="8"/>
-          <path d="M10 6v4l3 3"/>
-        </svg>
+      <button id="mobile-wallet-btn" class="mobile-wallet-pill disconnected"
+        aria-label="Wallet" aria-haspopup="dialog">
+        <span id="mobile-wallet-label">CONNECT</span>
       </button>
       <button id="mobile-settings-btn" class="mobile-icon-btn" aria-label="Settings">
         <svg viewBox="0 0 24 24" width="20" height="20"
@@ -1966,6 +2488,46 @@
     </div>
     <div class="token-picker-list" id="token-picker-list"></div>
   </div>
+</div>
+
+<!-- ── Wallet sheet overlay — Phase 6C ──────────────────────── -->
+<div id="wallet-sheet-overlay" hidden aria-hidden="true"></div>
+
+<!-- ── Wallet bottom sheet — Phase 6C ───────────────────────── -->
+<div id="wallet-sheet" class="glass-m" hidden
+  role="dialog" aria-modal="true" aria-label="Wallet">
+
+  <!-- Drag handle -->
+  <div class="wsh-handle" aria-hidden="true"></div>
+
+  <!-- Identity section — wallet.js populates (State A / B / C) -->
+  <div id="wallet-sheet-identity" class="wsh-section"></div>
+
+  <!-- Address section — wallet.js populates, hidden in State A -->
+  <div id="wallet-sheet-address" class="wsh-section" hidden></div>
+
+  <!-- Recent trades — wallet.js populates, shown only in State C -->
+  <div id="wallet-sheet-trades" class="wsh-section" hidden></div>
+
+  <!-- Network section — wallet.js populates, hidden in State A -->
+  <div id="wallet-sheet-network" class="wsh-section" hidden></div>
+
+  <!-- Connected via — wallet.js populates, hidden in State A -->
+  <div id="wallet-sheet-via" class="wsh-section" hidden></div>
+
+  <!-- Disconnect button — hidden in State A, shown by wallet.js in States B + C -->
+  <button id="wallet-sheet-disconnect"
+    class="btn btn-warn wsh-disconnect-btn"
+    data-confirm="false"
+    hidden
+    aria-label="Disconnect wallet">
+    <div class="btn-pulse-ring"></div>
+    <div class="btn-inner">
+      <div class="glass-sheen"></div>
+      <span id="wsh-disconnect-text">DISCONNECT WALLET</span>
+    </div>
+  </button>
+
 </div>
 
 <!-- Scripts — bottom of body, exact order, never reorder -->
@@ -2184,9 +2746,8 @@
     });
   });
 
-  document.getElementById('mobile-history-btn').addEventListener('click', function () {
-    navigateMobile('history');
-  });
+  /* History is now accessed via wallet sheet → VIEW ALL (Phase 6C).
+     #mobile-history-btn replaced by #mobile-wallet-btn — wired in wallet.js */
   document.getElementById('mobile-settings-btn').addEventListener('click', function () {
     navigateMobile('settings');
   });
@@ -2315,7 +2876,7 @@
     var changeClass = change > 0 ? 'up' : change < 0 ? 'dn' : '';
     var changeText  = price ? formatChange(change) : '\u2014';
     var priceText   = price ? formatPrice(price.usd) : '\u2014';
-    var volumeText  = formatVolume(MOCK_VOLUMES[token.address]);
+    var volumeText  = ''; /* Phase 7C wires real volume — blank until then */
     var isUp        = change >= 0;
 
     row.innerHTML =
@@ -2479,7 +3040,8 @@
   function boot() {
     showSkeletons();
     setTimeout(function () {
-      setState({ tokenList: MOCK_TOKEN_LIST, prices: MOCK_PRICES });
+      setState({ tokenList: MOCK_TOKEN_LIST });
+      /* Prices come from Chainlink via prices.js — no mock seed */
     }, 800);
   }
 
@@ -3087,11 +3649,11 @@
     var changeClass = change > 0 ? 'up' : change < 0 ? 'dn' : '';
 
     /* Stat data — Phase 7C replaces with live values */
-    var stats = MOCK_STATS[token.address] || {
+    var stats = {
       marketCap: '\u2014', marketCapSub: '',
       volume:    '\u2014', volumeSub:    '',
       supply:    '\u2014', supplySub:    '',
-    };
+    }; /* Phase 7C wires real values — no mock data */
 
     el.innerHTML =
       /* Header */
