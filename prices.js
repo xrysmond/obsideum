@@ -60,8 +60,11 @@
    * to a public RPC for anonymous reads. Matches swap.js::getReadProvider().
    */
   function getChainlinkProvider() {
-    var pp = window.privyProvider || window.ethereum;
-    if (pp) return new ethers.providers.Web3Provider(pp);
+    /* Always use a dedicated mainnet JSON-RPC for Chainlink.
+     * Chainlink feeds live on Ethereum mainnet only.
+     * Using the wallet's provider would query the wrong network
+     * if the user is connected to Arbitrum, Base, Optimism, etc.
+     */
     return new ethers.providers.JsonRpcProvider('https://eth.llamarpc.com');
   }
 
@@ -131,9 +134,8 @@
 
   /*
    * updateAllPrices()
-   * Fetches all Chainlink feeds in parallel. Stablecoins resolved to $1.00.
-   * Only Chainlink feeds are live on Ethereum mainnet (chainId 1).
-   * On other networks: stables still resolve; non-stables keep last known price.
+   * Fetches all Chainlink feeds in parallel using a dedicated mainnet RPC.
+   * Stablecoins resolved to $1.00. Runs regardless of user's connected network.
    * Writes merged result to STATE.prices via setState().
    */
   async function updateAllPrices() {
@@ -146,9 +148,10 @@
       updates[stableAddr] = { usd: 1.00, change24h: 0.00 };
     }
 
-    /* Chainlink feeds — mainnet only (null chainId = pre-connection, assume mainnet) */
-    if (chainId === 1 || chainId == null) {
-      var fetches = Object.keys(CHAINLINK_FEEDS).map(function (tokenAddr) {
+    /* Chainlink feeds — always fetch from mainnet regardless of user's connected network.
+     * Prices are denominated in USD on mainnet; the user's chain doesn't matter here.
+     */
+    var fetches = Object.keys(CHAINLINK_FEEDS).map(function (tokenAddr) {
         var feedAddr = CHAINLINK_FEEDS[tokenAddr];
         return fetchChainlinkPrice(feedAddr, provider)
           .then(function (result) {
@@ -167,8 +170,7 @@
           });
       });
 
-      await Promise.all(fetches);
-    }
+    await Promise.all(fetches);
 
     if (!Object.keys(updates).length) return;
     var merged = Object.assign({}, (window.STATE && STATE.prices) || {}, updates);
