@@ -191,51 +191,73 @@ html, body {
 /* ════════════════════════════════════════════════════════
    GLASSMORPHISM — three tiers, used correctly
 
+   The crystal shader generates animated geometric shards with
+   glowing violet edges. When a frosted glass panel sits in front
+   of this moving light source, the violet glow bleeds through
+   the blur. The panel is alive because what is behind it is alive.
+
+   Opacity and blur are calibrated together:
+   — Low enough opacity so the live crystal signal passes through
+   — Low enough blur so violet detail survives diffusion
+   — High saturation to amplify whatever violet reaches the surface
+   — Strong border + inset highlight to define the glass edge
+
    .glass-s  token rows, stat cells, subtle surfaces
    .glass-p  swap card, main interactive panels
    .glass-m  sidebar, overlays, dialogs
 ════════════════════════════════════════════════════════ */
 
-/* Tier 1 — surface */
+/* Tier 1 — surface
+   6px blur preserves crystal facet detail.
+   7% background lets the scene dominate.
+   Saturation 140% pumps the violet that comes through. */
 .glass-s {
-  background: rgba(156,61,187,.03);
-  backdrop-filter: blur(8px) saturate(110%);
-  -webkit-backdrop-filter: blur(8px) saturate(110%);
-  border: 1px solid rgba(156,61,187,.07);
+  background: rgba(156,61,187,.07);
+  backdrop-filter: blur(6px) saturate(140%);
+  -webkit-backdrop-filter: blur(6px) saturate(140%);
+  border: 1px solid rgba(156,61,187,.13);
 }
 
-/* Tier 2 — panel */
+/* Tier 2 — panel
+   14px blur: diffuses without fully homogenising.
+   20% background: 80% of the live crystal scene bleeds through.
+   Saturation 160% ensures violet survives the blend.
+   Inset top highlight at .09 — visible glass edge refraction. */
 .glass-p {
-  background: rgba(7,7,9,.45);
-  backdrop-filter: blur(24px) saturate(130%);
-  -webkit-backdrop-filter: blur(24px) saturate(130%);
-  border: 1px solid rgba(156,61,187,.13);
+  background: rgba(7,7,9,.20);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  border: 1px solid rgba(156,61,187,.22);
   box-shadow:
-    0 0 0 0.5px rgba(156,61,187,.07),
-    0 8px 32px rgba(0,0,0,.45),
-    inset 0 1px 0 rgba(232,232,240,.04);
+    0 0 0 0.5px rgba(156,61,187,.14),
+    0 8px 32px rgba(0,0,0,.38),
+    inset 0 1px 0 rgba(232,232,240,.09);
 }
 .glass-p.active,
 .glass-p:focus-within {
-  border-color: rgba(156,61,187,.32);
+  border-color: rgba(156,61,187,.42);
   box-shadow:
-    0 0 0 0.5px rgba(156,61,187,.18),
-    0 0 28px rgba(156,61,187,.10),
-    0 8px 32px rgba(0,0,0,.50),
-    inset 0 0 40px rgba(156,61,187,.04),
-    inset 0 1px 0 rgba(232,232,240,.06);
+    0 0 0 0.5px rgba(156,61,187,.24),
+    0 0 32px rgba(156,61,187,.16),
+    0 8px 32px rgba(0,0,0,.44),
+    inset 0 0 40px rgba(156,61,187,.07),
+    inset 0 1px 0 rgba(232,232,240,.12);
 }
 
-/* Tier 3 — modal */
+/* Tier 3 — modal
+   26px blur: more depth, stays within 40px mobile limit.
+   40% background: 60% crystal scene visible — clearly glass, not void.
+   Saturation 175% — maximum pump within spec.
+   Inset highlight .12 — the strongest glass surface read. */
 .glass-m {
-  background: rgba(7,7,9,.65);
-  backdrop-filter: blur(40px) saturate(150%);
-  -webkit-backdrop-filter: blur(40px) saturate(150%);
-  border: 1px solid rgba(156,61,187,.18);
+  background: rgba(7,7,9,.40);
+  backdrop-filter: blur(26px) saturate(175%);
+  -webkit-backdrop-filter: blur(26px) saturate(175%);
+  border: 1px solid rgba(156,61,187,.28);
   box-shadow:
-    0 0 0 0.5px rgba(156,61,187,.10),
-    0 24px 64px rgba(0,0,0,.65),
-    inset 0 1px 0 rgba(232,232,240,.06);
+    0 0 0 0.5px rgba(156,61,187,.16),
+    0 24px 64px rgba(0,0,0,.55),
+    inset 0 1px 0 rgba(232,232,240,.12);
 }
 
 /* Input inside glass — NO backdrop-filter (causes artifacts) */
@@ -259,11 +281,12 @@ html, body {
   box-shadow: 0 0 0 3px rgba(156,61,187,.08);
 }
 
-/* Fallback — browsers without backdrop-filter */
+/* Fallback — browsers without backdrop-filter
+   No blur available: background must be near-solid. */
 @supports not (backdrop-filter: blur(1px)) {
-  .glass-s { background: rgba(14,10,20,.85); }
-  .glass-p { background: rgba(10,8,16,.92);  }
-  .glass-m { background: rgba(8,6,14,.96);   }
+  .glass-s { background: rgba(14,10,20,.88); }
+  .glass-p { background: rgba(12,9,18,.94);  }
+  .glass-m { background: rgba(9,7,15,.97);   }
 }
 
 /* ════════════════════════════════════════════════════════
@@ -1228,14 +1251,15 @@ html, body {
   .glass-input, .btn, .btn-primary, .btn-warn,
   .seg-btn, .toggle { cursor: auto; }
 
-  /* Cap blur — performance */
+  /* Cap blur — performance. Desktop values already reduced;
+     mobile caps stay lower still, with saturation preserved. */
   .glass-p {
-    backdrop-filter: blur(16px) saturate(120%);
-    -webkit-backdrop-filter: blur(16px) saturate(120%);
+    backdrop-filter: blur(10px) saturate(150%);
+    -webkit-backdrop-filter: blur(10px) saturate(150%);
   }
   .glass-m {
-    backdrop-filter: blur(24px) saturate(130%);
-    -webkit-backdrop-filter: blur(24px) saturate(130%);
+    backdrop-filter: blur(18px) saturate(165%);
+    -webkit-backdrop-filter: blur(18px) saturate(165%);
   }
 }
 
