@@ -2872,7 +2872,7 @@
     var changeClass = change > 0 ? 'up' : change < 0 ? 'dn' : '';
     var changeText  = price ? formatChange(change) : '\u2014';
     var priceText   = price ? formatPrice(price.usd) : '\u2014';
-    var volumeText  = formatVolume(MOCK_VOLUMES[token.address]);
+    var volumeText  = ''; /* Phase 7C wires real volume — blank until then */
     var isUp        = change >= 0;
 
     row.innerHTML =
@@ -3036,7 +3036,8 @@
   function boot() {
     showSkeletons();
     setTimeout(function () {
-      setState({ tokenList: MOCK_TOKEN_LIST, prices: MOCK_PRICES });
+      setState({ tokenList: MOCK_TOKEN_LIST });
+      /* Prices come from Chainlink via prices.js — no mock seed */
     }, 800);
   }
 
@@ -3644,11 +3645,11 @@
     var changeClass = change > 0 ? 'up' : change < 0 ? 'dn' : '';
 
     /* Stat data — Phase 7C replaces with live values */
-    var stats = MOCK_STATS[token.address] || {
+    var stats = {
       marketCap: '\u2014', marketCapSub: '',
       volume:    '\u2014', volumeSub:    '',
       supply:    '\u2014', supplySub:    '',
-    };
+    }; /* Phase 7C wires real values — no mock data */
 
     el.innerHTML =
       /* Header */

@@ -78,8 +78,8 @@
   }
 
   function prices() {
-    return (window.STATE && STATE.prices && Object.keys(STATE.prices).length)
-      ? STATE.prices : MOCK_PRICES;
+    return (window.STATE && STATE.prices) || {};
+    /* No mock fallback — real prices from Chainlink via prices.js only */
   }
 
   function getToken(address) {
@@ -907,24 +907,15 @@
       } catch (_err) {
         if (seq !== _quoteSeq) return;
 
-        /* API unavailable — mock fallback, execute locked */
-        var mq = mockQuote(S.fromAddress, S.toAddress, val);
+        /* API unavailable — show real failure, no mock fallback */
         _lastQuote = null;
         _isMock    = true;
-
-        if (mq) {
-          showQuoteResult(parseFloat(mq.amountOut), null, fromTok, toTok);
-          if (gasEl)     gasEl.textContent = 'Gas \u00b7 ~$' + mq.gasUSD;
-          if (routingEl) { routingEl.hidden = true; routingEl.textContent = ''; }
-          /* updateExecLabel re-locks via _isMock = true */
-          updateExecLabel(null);
-        } else {
-          toAmountEl.classList.remove('quoting');
-          toAmountEl.style.opacity = '1';
-          clearMeta();
-          executeBtn.disabled = true;
-          updateExecLabel(null);
-        }
+        toAmountEl.classList.remove('quoting');
+        toAmountEl.style.opacity = '1';
+        clearMeta();
+        executeBtn.disabled = true;
+        updateExecLabel(null);
+        console.error('[swap.js] Quote failed:', _err);
       }
     }
 
