@@ -200,7 +200,7 @@
      Subgraph token IDs are always lowercase.
      address.toLowerCase() applied before every query.
   ───────────────────────────────────────────────────────────────── */
-  var THE_GRAPH_API_KEY   = 'YOUR_GRAPH_API_KEY'; /* free: thegraph.com/studio */
+  var THE_GRAPH_API_KEY   = 'ba6a6c595dff86ed9d73903bcca93b22';
   var UNISWAP_V3_SUBGRAPH = 'https://gateway.thegraph.com/api/' +
                             THE_GRAPH_API_KEY +
                             '/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV';
@@ -602,9 +602,10 @@
             hideChartSkeleton(priceDiv);
             renderChart(liveInst, fresh.prices);
           }
-        }).catch(function () {
+        }).catch(function (err) {
           /* Subgraph unavailable — remove skeleton, chart stays empty */
           hideChartSkeleton(priceDiv);
+          console.error('[prices.js] Chart fetch failed:', err);
         });
       }
     };
@@ -654,8 +655,9 @@
               hideChartSkeleton(priceDiv);
               renderChart(liveInst, fresh.prices);
             }
-          }).catch(function () {
+          }).catch(function (err) {
             hideChartSkeleton(priceDiv);
+            console.error('[prices.js] Chart fetch failed:', err);
           });
         }
 
