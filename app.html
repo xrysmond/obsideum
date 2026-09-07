@@ -2557,79 +2557,233 @@
   checkExistingConnection();
 </script>
 
-<!-- ── Phase 2C — Navigation wiring ─────────────────────────────── -->
+<!-- ── Phase 8D — Navigation wiring refactor ──────────────────────── -->
 <script>
 (function () {
   'use strict';
 
+  /* ─────────────────────────────────────────
+     DOM REFS
+  ───────────────────────────────────────── */
   var marketsLayout  = document.getElementById('markets-layout');
   var settingsLayout = document.getElementById('settings-layout');
+  var rightPanel     = document.getElementById('right-panel');
   var rightContent   = document.getElementById('right-panel-content');
   var panelNull      = document.getElementById('panel-null');
   var mobileBack     = document.getElementById('mobile-back');
+  var mobileBottomNav = document.getElementById('mobile-bottom-nav');
+  var mobileWordmark  = document.querySelector('.mobile-wordmark');
   var sidebarWallet  = document.getElementById('sidebar-wallet');
   var sidebarNetwork = document.getElementById('sidebar-network');
 
-  var mobileViews = {
-    portfolio: document.getElementById('mobile-portfolio'),
-    token:     document.getElementById('mobile-token'),
-    swap:      document.getElementById('mobile-swap'),
-    accounts:  document.getElementById('mobile-accounts'),
-    send:      document.getElementById('mobile-send'),
-    receive:   document.getElementById('mobile-receive'),
-    settings:  document.getElementById('mobile-settings'),
-  };
+  /* ─────────────────────────────────────────
+     CONSTANTS
+  ───────────────────────────────────────── */
+  var TAB_KEYS = ['portfolio', 'swap', 'accounts'];
 
   var NETWORK_NAMES = {
-    1: 'Ethereum', 42161: 'Arbitrum One', 8453: 'Base', 10: 'Optimism',
+    1:        'Ethereum',
+    10:       'Optimism',
+    56:       'BNB Chain',
+    130:      'Unichain',
+    137:      'Polygon',
+    8453:     'Base',
+    42161:    'Arbitrum One',
+    43114:    'Avalanche',
+    11155111: 'Sepolia',
   };
 
-  function renderPanelContent(state) {
-    panelNull.hidden = (state !== null);
-    document.dispatchEvent(new CustomEvent('panel:render', { detail: state }));
+  /* ─────────────────────────────────────────
+     MOBILE STATE
+     currentSubView: active sub-view key or null (null = tab is showing)
+     prevSubView:    sub-view we came from — used by back stack
+  ───────────────────────────────────────── */
+  var currentSubView = null;
+  var prevSubView    = null;
+
+  /* ─────────────────────────────────────────
+     HELPERS
+  ───────────────────────────────────────── */
+  function truncateAddress(addr) {
+    return addr ? addr.slice(0, 6) + '...' + addr.slice(-4) : '';
   }
 
-  function setRightPanel(state) {
-    rightContent.classList.add('leaving');
-    setTimeout(function () {
-      renderPanelContent(state);
-      rightContent.classList.remove('leaving');
-      void rightContent.offsetWidth;
-      rightContent.classList.add('entering');
-      setTimeout(function () { rightContent.classList.remove('entering'); }, 240);
-    }, 160);
+  function hideAllMobileViews() {
+    document.querySelectorAll('.mobile-view').forEach(function (el) {
+      el.hidden = true;
+    });
   }
 
-  function setView(view) {
-    if (view === 'settings') {
-      marketsLayout.style.display = 'none';
-      settingsLayout.hidden = false;
-    } else {
-      marketsLayout.style.display = '';
-      settingsLayout.hidden = true;
+  /* ─────────────────────────────────────────
+     MOBILE — Tab navigation
+     Hides all views, shows tab view.
+     Resets sub-view state. Updates STATE.mobileTab.
+     Tab indicator tracks active tab.
+  ───────────────────────────────────────── */
+  function setMobileTab(tab) {
+    hideAllMobileViews();
+
+    var el = document.getElementById('mobile-' + tab);
+    if (el) el.hidden = false;
+
+    currentSubView = null;
+    prevSubView    = null;
+
+    /* Update both mobileTab (new) and mobileView (legacy — swap.js + chart scripts depend on it) */
+    setState({ mobileTab: tab, mobileView: tab });
+    updateMobileNavIndicator(tab);
+    updateMobileTopBar(tab);
+
+    if (mobileBottomNav) mobileBottomNav.classList.remove('nav-hidden');
+    if (mobileBack)      mobileBack.classList.remove('visible');
+  }
+
+  /* ─────────────────────────────────────────
+     MOBILE — Sub-view navigation
+     Shows a non-tab view (token / send / receive / settings).
+     Tab indicator does NOT change.
+     Null → return to active tab.
+  ───────────────────────────────────────── */
+  function setMobileSubView(view) {
+    if (view === null) {
+      /* Return to active tab */
+      hideAllMobileViews();
+      var activeTab = STATE.mobileTab || 'portfolio';
+      var tabEl = document.getElementById('mobile-' + activeTab);
+      if (tabEl) tabEl.hidden = false;
+
+      prevSubView    = currentSubView;
+      currentSubView = null;
+
+      /* Restore mobileView to active tab for legacy listeners */
+      setState({ prevMobileView: STATE.mobileView, mobileView: activeTab });
+
+      if (mobileBottomNav) mobileBottomNav.classList.remove('nav-hidden');
+      if (mobileBack)      mobileBack.classList.remove('visible');
+      updateMobileTopBar(activeTab);
+      return;
     }
+
+    /* Show sub-view */
+    hideAllMobileViews();
+    var subEl = document.getElementById('mobile-' + view);
+    if (subEl) subEl.hidden = false;
+
+    prevSubView    = currentSubView;
+    currentSubView = view;
+
+    /* Update mobileView for legacy listeners (chart scripts, token panel inject) */
+    setState({ prevMobileView: STATE.mobileView, mobileView: view });
+
+    if (mobileBottomNav) mobileBottomNav.classList.add('nav-hidden');
+    if (mobileBack)      mobileBack.classList.add('visible');
+    updateMobileTopBar(view);
+  }
+
+  function updateMobileNavIndicator(tab) {
+    var items = Array.from(document.querySelectorAll('.mobile-nav-item'));
+    items.forEach(function (btn) {
+      btn.classList.toggle('active', btn.dataset.mobileTab === tab);
+    });
+    var idx = TAB_KEYS.indexOf(tab);
+    var indicator = document.getElementById('mobile-nav-indicator');
+    if (indicator && idx > -1) {
+      indicator.style.transform = 'translateX(' + (idx * 100) + '%)';
+    }
+  }
+
+  function updateMobileTopBar(view) {
+    if (!mobileWordmark) return;
+    mobileWordmark.classList.remove('ctx-token', 'ctx-section');
+    if (view === 'token') {
+      var tList = window.STATE && STATE.tokenList;
+      var match = tList && tList.find(function (t) { return t.address === STATE.token; });
+      mobileWordmark.textContent = match ? match.symbol : 'OBSIDEUM';
+      mobileWordmark.classList.add('ctx-token');
+    } else if (view === 'settings') {
+      mobileWordmark.textContent = 'SETTINGS';
+      mobileWordmark.classList.add('ctx-section');
+    } else {
+      mobileWordmark.textContent = 'OBSIDEUM';
+    }
+  }
+
+  /* ─────────────────────────────────────────
+     DESKTOP — Right panel
+     openRightPanel: removes hidden, animates in, dispatches panel:render.
+     closeRightPanel: animates out, restores hidden.
+  ───────────────────────────────────────── */
+  function openRightPanel(type) {
+    setState({ rightPanel: type });
+    rightPanel.hidden = false;
+
+    rightContent.classList.remove('leaving');
+    void rightContent.offsetWidth; /* force reflow for animation restart */
+    rightContent.classList.add('entering');
+    setTimeout(function () { rightContent.classList.remove('entering'); }, 240);
+
+    if (panelNull) panelNull.hidden = (type !== null);
+    document.dispatchEvent(new CustomEvent('panel:render', { detail: type }));
     updateSidebarActive();
   }
 
+  function closeRightPanel() {
+    rightContent.classList.add('leaving');
+    setTimeout(function () {
+      rightContent.classList.remove('leaving');
+      rightPanel.hidden = true;
+      setState({ rightPanel: null });
+      updateSidebarActive();
+    }, 160);
+  }
+
+  /* ─────────────────────────────────────────
+     DESKTOP — View routing
+     setDesktopView maps sidebar data-view to the correct action.
+  ───────────────────────────────────────── */
+  function setDesktopView(view) {
+    if (view === 'settings') {
+      setState({ view: 'settings' });
+      marketsLayout.style.display = 'none';
+      settingsLayout.hidden = false;
+      closeRightPanel();
+    } else {
+      setState({ view: 'markets' });
+      marketsLayout.style.display = '';
+      settingsLayout.hidden = true;
+      if      (view === 'portfolio') closeRightPanel();
+      else if (view === 'swap')      openRightPanel('swap');
+      else if (view === 'history')   openRightPanel('history');
+    }
+  }
+
+  /* ─────────────────────────────────────────
+     DESKTOP — Sidebar active state + indicator
+  ───────────────────────────────────────── */
   function updateSidebarActive() {
-    var view  = STATE.view;
-    var panel = STATE.rightPanel;
-    document.querySelectorAll('.sidebar .nav-item').forEach(function (btn) {
-      var v = btn.dataset.view;
-      var active =
-        (v === 'portfolio' && view === 'markets'  && (panel === null || panel === 'token')) ||
-        (v === 'swap'     && view === 'markets'  && panel === 'swap')    ||
-        (v === 'history'  && view === 'markets'  && panel === 'history') ||
-        (v === 'settings' && view === 'settings');
+    var panel      = STATE.rightPanel;
+    var inSettings = settingsLayout && !settingsLayout.hidden;
+
+    document.querySelectorAll('.sidebar-nav .nav-item').forEach(function (btn) {
+      var dv = btn.dataset.view;
+      var active;
+      if (inSettings) {
+        active = (dv === 'settings');
+      } else {
+        /* portfolio is active when panel is closed or showing a portfolio sub-context */
+        active =
+          (dv === 'portfolio' && (panel === null || panel === 'token' || panel === 'send' || panel === 'receive')) ||
+          (dv === 'swap'      && panel === 'swap')    ||
+          (dv === 'history'   && panel === 'history');
+      }
       btn.classList.toggle('active', active);
     });
     updateSidebarIndicator();
   }
 
   function updateSidebarIndicator() {
-    var indicator  = document.getElementById('sidebar-nav-indicator');
+    var indicator = document.getElementById('sidebar-nav-indicator');
     if (!indicator) return;
-
     var activeItem = document.querySelector('.sidebar-nav .nav-item.active');
     if (!activeItem) { indicator.style.opacity = '0'; return; }
 
@@ -2642,72 +2796,17 @@
       requestAnimationFrame(function () { indicator.style.transition = ''; });
       return;
     }
-
     indicator.style.opacity   = '1';
     indicator.style.height    = activeItem.offsetHeight + 'px';
     indicator.style.transform = 'translateY(' + activeItem.offsetTop + 'px)';
   }
 
-  var mobileWordmark  = document.querySelector('.mobile-wordmark');
-  var mobileBottomNav = document.getElementById('mobile-bottom-nav');
-
-  function setMobileView(view) {
-    Object.keys(mobileViews).forEach(function (key) {
-      if (!mobileViews[key]) return;
-      mobileViews[key].hidden = (key !== view);
-    });
-
-    mobileBack.classList.toggle('visible', view === 'token');
-
-    var topLevel = (view === 'portfolio' || view === 'swap' || view === 'accounts');
-    mobileBottomNav.classList.toggle('nav-hidden', !topLevel);
-
-    mobileWordmark.classList.remove('ctx-token', 'ctx-section');
-    if (view === 'token') {
-      var tList = window.STATE && STATE.tokenList;
-      var match = tList && tList.find(function (t) { return t.address === STATE.token; });
-      mobileWordmark.textContent = match ? match.symbol : 'OBSIDEUM';
-      mobileWordmark.classList.add('ctx-token');
-    } else if (view === 'history' || view === 'settings') {
-      mobileWordmark.textContent = view.toUpperCase();
-      mobileWordmark.classList.add('ctx-section');
-    } else {
-      mobileWordmark.textContent = 'OBSIDEUM';
-    }
-
-    updateMobileNavActive(view);
-  }
-
-  function updateMobileNavActive(view) {
-    var items = Array.from(document.querySelectorAll('.mobile-nav-item'));
-    items.forEach(function (btn) {
-      var key = btn.dataset.mobileTab || btn.dataset.mobileView;
-      btn.classList.toggle('active', key === view);
-    });
-    var idx = items.findIndex(function (btn) {
-      var key = btn.dataset.mobileTab || btn.dataset.mobileView;
-      return key === view;
-    });
-    var indicator = document.getElementById('mobile-nav-indicator');
-    if (indicator && idx > -1) {
-      indicator.style.transform = 'translateX(' + (idx * 100) + '%)';
-    }
-  }
-
-  function navigateMobile(view) {
-    setState({ prevMobileView: STATE.mobileView, mobileView: view });
-  }
-
-  function truncateAddress(addr) {
-    return addr ? addr.slice(0, 6) + '...' + addr.slice(-4) : '';
-  }
-
-  document.addEventListener('state:view',       function (e) { setView(e.detail); });
-  document.addEventListener('state:rightPanel',  function (e) { setRightPanel(e.detail); updateSidebarActive(); });
-  document.addEventListener('state:mobileView',  function (e) { setMobileView(e.detail); });
-
+  /* ─────────────────────────────────────────
+     SIDEBAR — Wallet + network display
+  ───────────────────────────────────────── */
   document.addEventListener('state:wallet', function (e) {
     var addr = e.detail;
+    if (!sidebarWallet) return;
     sidebarWallet.textContent = addr ? truncateAddress(addr) : '';
     sidebarWallet.style.color = '';
     var dot = document.getElementById('swb-dot');
@@ -2716,7 +2815,7 @@
 
   document.addEventListener('state:ens', function (e) {
     var ens = e.detail;
-    if (!ens || !STATE.wallet) return;
+    if (!ens || !STATE.wallet || !sidebarWallet) return;
     sidebarWallet.style.opacity = '0';
     setTimeout(function () {
       sidebarWallet.textContent   = ens;
@@ -2726,57 +2825,124 @@
   });
 
   document.addEventListener('state:network', function (e) {
-    var id   = e.detail;
-    var name = NETWORK_NAMES[id] || ('Chain ' + id);
-    sidebarNetwork.textContent = id ? name : '';
-    var wrong = id && STATE.settings.defaultNetwork && id !== STATE.settings.defaultNetwork;
+    var id = e.detail;
+    if (!sidebarNetwork) return;
+    sidebarNetwork.textContent = id ? (NETWORK_NAMES[id] || ('Chain ' + id)) : '';
+    var wrong = id && STATE.settings && STATE.settings.defaultNetwork && id !== STATE.settings.defaultNetwork;
     sidebarNetwork.style.color = wrong ? 'var(--warn)' : '';
   });
 
+  /* ─────────────────────────────────────────
+     TOKEN NAVIGATION
+     portfolio.js calls setState({ token }) on row tap.
+     This wiring handles the navigation response.
+  ───────────────────────────────────────── */
+  document.addEventListener('state:token', function () {
+    if (!STATE.token) return;
+    if (window.innerWidth < 768) setMobileSubView('token');
+    else                         openRightPanel('token');
+    /* Update mobile top bar if already in token sub-view (symbol may have changed) */
+    if (currentSubView === 'token') updateMobileTopBar('token');
+  });
+
+  /* ─────────────────────────────────────────
+     ACTION BUTTONS
+     Delegated click handler — works for portfolio and token detail buttons.
+  ───────────────────────────────────────── */
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.action-btn');
+    if (!btn) return;
+    var action    = btn.dataset.action;
+    var fromToken = btn.dataset.fromToken === 'true';
+    var isMobile  = window.innerWidth < 768;
+
+    if (action === 'swap') {
+      if (isMobile) setMobileTab('swap');
+      else          openRightPanel('swap');
+      /* swap.js reads STATE.token on mount — preselection handled there */
+    }
+    if (action === 'send') {
+      if (isMobile) setMobileSubView('send');
+      else          openRightPanel('send');
+      document.dispatchEvent(new CustomEvent('send:mount', { detail: { fromToken: fromToken } }));
+    }
+    if (action === 'receive') {
+      if (isMobile) setMobileSubView('receive');
+      else          openRightPanel('receive');
+      document.dispatchEvent(new CustomEvent('receive:mount'));
+    }
+  });
+
+  /* ─────────────────────────────────────────
+     CLICK HANDLERS — Desktop sidebar
+  ───────────────────────────────────────── */
   document.querySelectorAll('.sidebar-nav .nav-item').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var v = btn.dataset.view;
-      if      (v === 'portfolio') setState({ view: 'markets', rightPanel: null });
-      else if (v === 'swap')      setState({ view: 'markets', rightPanel: 'swap' });
-      else if (v === 'history')   setState({ view: 'markets', rightPanel: 'history' });
+      if (v) setDesktopView(v);
     });
   });
 
-  document.getElementById('settings-btn').addEventListener('click', function () {
-    setState({ view: 'settings' });
-  });
-
+  /* ─────────────────────────────────────────
+     CLICK HANDLERS — Mobile bottom nav
+  ───────────────────────────────────────── */
   document.querySelectorAll('.mobile-nav-item').forEach(function (btn) {
     btn.addEventListener('click', function () {
-      var key = btn.dataset.mobileTab || btn.dataset.mobileView;
-      if (key) navigateMobile(key);
+      var tab = btn.dataset.mobileTab;
+      if (tab) setMobileTab(tab);
     });
   });
 
-  /* History is now accessed via wallet sheet → VIEW ALL (Phase 6C).
-     #mobile-history-btn replaced by #mobile-wallet-btn — wired in wallet.js */
-  document.getElementById('mobile-settings-btn').addEventListener('click', function () {
-    navigateMobile('settings');
-  });
+  /* Mobile settings — sub-view (not a tab) */
+  var mobileSettingsBtn = document.getElementById('mobile-settings-btn');
+  if (mobileSettingsBtn) {
+    mobileSettingsBtn.addEventListener('click', function () {
+      setMobileSubView('settings');
+    });
+  }
 
-  mobileBack.addEventListener('click', function () {
-    navigateMobile(STATE.prevMobileView || 'markets');
-  });
+  /* Mobile back — return to active tab when in a sub-view */
+  if (mobileBack) {
+    mobileBack.addEventListener('click', function () {
+      if (currentSubView !== null) setMobileSubView(null);
+    });
+  }
 
-  window.addEventListener('resize', updateSidebarIndicator);
+  /* ─────────────────────────────────────────
+     RESIZE — sidebar indicator + app height
+  ───────────────────────────────────────── */
+  function setAppHeight() {
+    document.documentElement.style.setProperty('--app-h', window.innerHeight + 'px');
+  }
 
-  (function () {
-    function setAppHeight() {
-      document.documentElement.style.setProperty('--app-h', window.innerHeight + 'px');
-    }
+  window.addEventListener('resize', function () {
+    updateSidebarIndicator();
     setAppHeight();
-    window.addEventListener('resize', setAppHeight);
-  }());
+  });
 
-  setView(STATE.view || 'markets');
-  setMobileView(STATE.mobileTab || STATE.mobileView || 'portfolio');
-  setRightPanel(STATE.rightPanel);
+  /* ─────────────────────────────────────────
+     WINDOW EXPORTS
+     Other modules call these directly rather than setState-routing.
+  ───────────────────────────────────────── */
+  window.setMobileTab     = setMobileTab;
+  window.setMobileSubView = setMobileSubView;
+  window.openRightPanel   = openRightPanel;
+  window.closeRightPanel  = closeRightPanel;
+  window.setDesktopView   = setDesktopView;
+
+  /* ─────────────────────────────────────────
+     INIT
+  ───────────────────────────────────────── */
+  setAppHeight();
+
+  /* Desktop: markets layout visible, settings hidden, right panel already hidden (Phase 8B) */
+  marketsLayout.style.display = '';
+  settingsLayout.hidden = true;
+  updateSidebarActive();
   requestAnimationFrame(updateSidebarIndicator);
+
+  /* Mobile: default to portfolio tab */
+  setMobileTab(STATE.mobileTab || 'portfolio');
 
 }());
 </script>

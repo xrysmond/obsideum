@@ -70,7 +70,7 @@ window.STATE = {
 
     /* Networks */
     defaultNetwork:    1,                    /* number   — chain ID: 1 | 42161 | 8453 | 10  */
-    activeNetworks:    [1, 42161, 8453, 10], /* number[] — chains the user has enabled      */
+    activeNetworks:    [1, 10, 56, 130, 137, 8453, 42161, 43114], /* number[] — chains the user has enabled */
     gasPreference:     'fast',               /* string   — 'standard' | 'fast' | 'instant'  */
     customRPC:         '',                   /* string   — empty = use default for network   */
 
