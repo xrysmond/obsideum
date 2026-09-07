@@ -208,7 +208,7 @@ window.FX = (function () {
     'void main(){',
     '  vec2 poolUV = vec2(v_wpos.x/u_res.x, 1.0-v_wpos.y/u_res.y);',
     '  vec3 pool   = texture2D(u_lightPool, poolUV).rgb;',
-    '  // Face absorbs the light from below — brighter near cracks',
+    '  // Face absorbs light from below - brighter near cracks',
     '  vec3 lit = v_col + pool * 3.2;',
     '  gl_FragColor = vec4(min(vec3(1.0), lit), 1.0);',
     '}'
@@ -296,8 +296,9 @@ window.FX = (function () {
 
   function compileShader(type,src){
     var sh=gl.createShader(type);gl.shaderSource(sh,src);gl.compileShader(sh);
-    if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))
-      throw new Error('[FX] shader:\n'+gl.getShaderInfoLog(sh));
+    if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS)){
+      console.error('[FX] shader compile:\n'+gl.getShaderInfoLog(sh));
+    }
     return sh;
   }
   function makeProgram(vs,fs){
@@ -305,7 +306,9 @@ window.FX = (function () {
     gl.attachShader(p,compileShader(gl.VERTEX_SHADER,vs));
     gl.attachShader(p,compileShader(gl.FRAGMENT_SHADER,fs));
     gl.linkProgram(p);
-    if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error('[FX] link:\n'+gl.getProgramInfoLog(p));
+    if(!gl.getProgramParameter(p,gl.LINK_STATUS)){
+      console.error('[FX] link:\n'+gl.getProgramInfoLog(p));
+    }
     p._u={};p._a={};
     var nu=gl.getProgramParameter(p,gl.ACTIVE_UNIFORMS);
     for(var i=0;i<nu;i++){var u=gl.getActiveUniform(p,i);p._u[u.name]=gl.getUniformLocation(p,u.name);}
@@ -573,7 +576,7 @@ window.FX = (function () {
     gl.bufferData(gl.ARRAY_BUFFER,glowData.byteLength, gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER,bufSharp);
     gl.bufferData(gl.ARRAY_BUFFER,sharpData.byteLength,gl.DYNAMIC_DRAW);
-    wideFrame=0;
+    wideFrame=1;  // start at 1 so cascade runs on the very first frame
   }
 
   function renderCrystal(ts){
