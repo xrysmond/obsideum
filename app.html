@@ -2350,12 +2350,12 @@
     <nav class="sidebar-nav">
       <div class="sidebar-nav-indicator" id="sidebar-nav-indicator"></div>
 
-      <button class="nav-item active" data-view="markets">
+      <button class="nav-item active" data-view="portfolio">
         <svg class="nav-icon" viewBox="0 0 24 24">
-          <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
-          <polyline points="16 7 22 7 22 13"/>
+          <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+          <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
         </svg>
-        <span class="nav-label">Markets</span>
+        <span class="nav-label">Portfolio</span>
       </button>
 
       <button class="nav-item" data-view="swap">
@@ -2389,15 +2389,12 @@
     <div id="markets-layout" class="markets-layout">
 
       <div id="token-list-col" class="token-list-col">
-        <div class="search-wrap">
-          <input class="glass-input token-search" id="token-search"
-            type="text" placeholder="Search tokens..."
-            autocomplete="off" spellcheck="false">
+        <div id="portfolio-main" class="portfolio-main">
+          <!-- Rendered by portfolio.js -->
         </div>
-        <div id="token-list" class="token-list"></div>
       </div>
 
-      <div id="right-panel" class="right-panel glass-m">
+      <div id="right-panel" class="right-panel glass-m" hidden>
         <div id="right-panel-content" class="panel-content">
           <div class="panel-null-state" id="panel-null">
             <span class="panel-null-label">Select a token to begin</span>
@@ -2424,10 +2421,6 @@
     </button>
     <span class="mobile-wordmark">OBSIDEUM</span>
     <div class="mobile-top-actions">
-      <button id="mobile-wallet-btn" class="mobile-wallet-pill disconnected"
-        aria-label="Wallet" aria-haspopup="dialog">
-        <span id="mobile-wallet-label">CONNECT</span>
-      </button>
       <button id="mobile-settings-btn" class="mobile-icon-btn" aria-label="Settings">
         <svg viewBox="0 0 24 24" width="20" height="20"
           fill="none" stroke="currentColor" stroke-width="1.5"
@@ -2440,38 +2433,44 @@
   </div>
 
   <div id="mobile-content" class="mobile-content">
-    <div id="mobile-markets" class="mobile-view">
-      <div class="search-wrap">
-        <input class="glass-input token-search" id="mobile-token-search"
-          type="text" placeholder="Search tokens..."
-          autocomplete="off" spellcheck="false">
-      </div>
-      <div id="mobile-token-list" class="token-list"></div>
+    <div id="mobile-portfolio" class="mobile-view">
+      <!-- portfolio-balance-section and portfolio-assets-section rendered by portfolio.js -->
     </div>
-    <div id="mobile-token"    class="mobile-view" hidden></div>
-    <div id="mobile-swap"     class="mobile-view" hidden></div>
-    <div id="mobile-history"  class="mobile-view" hidden></div>
-    <div id="mobile-settings" class="mobile-view" hidden></div>
+    <div id="mobile-swap"      class="mobile-view" hidden></div>
+    <div id="mobile-accounts"  class="mobile-view accounts-view" hidden></div>
+    <div id="mobile-token"     class="mobile-view" hidden></div>
+    <div id="mobile-send"      class="mobile-view send-view" hidden></div>
+    <div id="mobile-receive"   class="mobile-view receive-view" hidden></div>
+    <div id="mobile-settings"  class="mobile-view" hidden></div>
   </div>
 
   <nav id="mobile-bottom-nav" class="mobile-bottom-nav">
     <div class="mobile-nav-indicator" id="mobile-nav-indicator"></div>
 
-    <button class="mobile-nav-item active" data-mobile-view="markets" aria-label="Markets">
-      <svg class="mobile-nav-icon" viewBox="0 0 24 24">
-        <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
-        <polyline points="16 7 22 7 22 13"/>
+    <button class="mobile-nav-item active" data-mobile-tab="portfolio" aria-label="Portfolio">
+      <svg class="mobile-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+        <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
       </svg>
-      <span class="mobile-nav-label">Markets</span>
+      <span class="mobile-nav-label">Portfolio</span>
     </button>
 
-    <button class="mobile-nav-item" data-mobile-view="swap" aria-label="Swap">
-      <svg class="mobile-nav-icon" viewBox="0 0 24 24">
+    <button class="mobile-nav-item" data-mobile-tab="swap" aria-label="Swap">
+      <svg class="mobile-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
         <path d="M7 20V4m0 0L3 8m4-4l4 4"/>
         <path d="M17 4v16m0 0l4-4m-4 4l-4-4"/>
       </svg>
       <span class="mobile-nav-label">Swap</span>
     </button>
+
+    <button class="mobile-nav-item" data-mobile-tab="accounts" aria-label="Accounts">
+      <svg class="mobile-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="8" r="4"/>
+        <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+      </svg>
+      <span class="mobile-nav-label">Accounts</span>
+    </button>
+
   </nav>
 
 </div>
@@ -2532,6 +2531,7 @@
 
 <!-- Scripts — bottom of body, exact order, never reorder -->
 <script src="https://unpkg.com/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 <script src="fx.js"></script>
 <script src="state.js"></script>
 <script src="wallet.js"></script>
@@ -2571,11 +2571,13 @@
   var sidebarNetwork = document.getElementById('sidebar-network');
 
   var mobileViews = {
-    markets:  document.getElementById('mobile-markets'),
-    token:    document.getElementById('mobile-token'),
-    swap:     document.getElementById('mobile-swap'),
-    history:  document.getElementById('mobile-history'),
-    settings: document.getElementById('mobile-settings'),
+    portfolio: document.getElementById('mobile-portfolio'),
+    token:     document.getElementById('mobile-token'),
+    swap:      document.getElementById('mobile-swap'),
+    accounts:  document.getElementById('mobile-accounts'),
+    send:      document.getElementById('mobile-send'),
+    receive:   document.getElementById('mobile-receive'),
+    settings:  document.getElementById('mobile-settings'),
   };
 
   var NETWORK_NAMES = {
@@ -2615,7 +2617,7 @@
     document.querySelectorAll('.sidebar .nav-item').forEach(function (btn) {
       var v = btn.dataset.view;
       var active =
-        (v === 'markets'  && view === 'markets'  && (panel === null || panel === 'token')) ||
+        (v === 'portfolio' && view === 'markets'  && (panel === null || panel === 'token')) ||
         (v === 'swap'     && view === 'markets'  && panel === 'swap')    ||
         (v === 'history'  && view === 'markets'  && panel === 'history') ||
         (v === 'settings' && view === 'settings');
@@ -2651,12 +2653,13 @@
 
   function setMobileView(view) {
     Object.keys(mobileViews).forEach(function (key) {
+      if (!mobileViews[key]) return;
       mobileViews[key].hidden = (key !== view);
     });
 
     mobileBack.classList.toggle('visible', view === 'token');
 
-    var topLevel = (view === 'markets' || view === 'swap');
+    var topLevel = (view === 'portfolio' || view === 'swap' || view === 'accounts');
     mobileBottomNav.classList.toggle('nav-hidden', !topLevel);
 
     mobileWordmark.classList.remove('ctx-token', 'ctx-section');
@@ -2678,9 +2681,13 @@
   function updateMobileNavActive(view) {
     var items = Array.from(document.querySelectorAll('.mobile-nav-item'));
     items.forEach(function (btn) {
-      btn.classList.toggle('active', btn.dataset.mobileView === view);
+      var key = btn.dataset.mobileTab || btn.dataset.mobileView;
+      btn.classList.toggle('active', key === view);
     });
-    var idx = items.findIndex(function (btn) { return btn.dataset.mobileView === view; });
+    var idx = items.findIndex(function (btn) {
+      var key = btn.dataset.mobileTab || btn.dataset.mobileView;
+      return key === view;
+    });
     var indicator = document.getElementById('mobile-nav-indicator');
     if (indicator && idx > -1) {
       indicator.style.transform = 'translateX(' + (idx * 100) + '%)';
@@ -2729,9 +2736,9 @@
   document.querySelectorAll('.sidebar-nav .nav-item').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var v = btn.dataset.view;
-      if      (v === 'markets') setState({ view: 'markets', rightPanel: null });
-      else if (v === 'swap')    setState({ view: 'markets', rightPanel: 'swap' });
-      else if (v === 'history') setState({ view: 'markets', rightPanel: 'history' });
+      if      (v === 'portfolio') setState({ view: 'markets', rightPanel: null });
+      else if (v === 'swap')      setState({ view: 'markets', rightPanel: 'swap' });
+      else if (v === 'history')   setState({ view: 'markets', rightPanel: 'history' });
     });
   });
 
@@ -2741,8 +2748,8 @@
 
   document.querySelectorAll('.mobile-nav-item').forEach(function (btn) {
     btn.addEventListener('click', function () {
-      var view = btn.dataset.mobileView;
-      if (view) navigateMobile(view);
+      var key = btn.dataset.mobileTab || btn.dataset.mobileView;
+      if (key) navigateMobile(key);
     });
   });
 
@@ -2766,8 +2773,8 @@
     window.addEventListener('resize', setAppHeight);
   }());
 
-  setView(STATE.view              || 'markets');
-  setMobileView(STATE.mobileView  || 'markets');
+  setView(STATE.view || 'markets');
+  setMobileView(STATE.mobileTab || STATE.mobileView || 'portfolio');
   setRightPanel(STATE.rightPanel);
   requestAnimationFrame(updateSidebarIndicator);
 
@@ -2946,6 +2953,7 @@
   }
 
   function renderToContainer(container, tokens, prices, animate) {
+    if (!container) return;
     container.innerHTML = '';
     if (!tokens || !tokens.length) {
       container.appendChild(buildEmptyState(currentQuery));
@@ -2975,14 +2983,15 @@
 
   function showSkeletons() {
     [desktopList, mobileList].forEach(function (c) {
+      if (!c) return;
       c.innerHTML = '';
       for (var s = 0; s < 3; s++) { c.appendChild(buildSkeletonRow()); }
     });
   }
 
   function fadeSkeletonsThenRender(tokens, prices) {
-    var skeletons = Array.from(desktopList.querySelectorAll('.token-row--skeleton'))
-      .concat(Array.from(mobileList.querySelectorAll('.token-row--skeleton')));
+    var skeletons = (desktopList ? Array.from(desktopList.querySelectorAll('.token-row--skeleton')) : [])
+      .concat(mobileList ? Array.from(mobileList.querySelectorAll('.token-row--skeleton')) : []);
     if (!skeletons.length) { renderBoth(tokens, prices, true); return; }
     skeletons.forEach(function (s) {
       s.style.transition = 'opacity 160ms var(--ease-in)';

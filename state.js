@@ -20,20 +20,42 @@ window.STATE = {
   network:        null,   /* number         chain ID: 1 | 42161 | 8453 | 10          */
   connected:      false,  /* boolean                                                  */
 
+  /* ── Multi-wallet ── */
+  wallets:      [],  /* Privy wallet objects array — from useWallets().wallets        */
+  activeWallet: 0,   /* number — index of active wallet in wallets[]                 */
+
   /* ── Navigation ── */
-  view:           'markets',  /* 'markets' | 'settings'                          */
-  rightPanel:     null,       /* 'token' | 'swap' | 'history' | null             */
-  mobileView:     'markets',  /* 'markets' | 'token' | 'swap' | 'history' | 'settings' */
-  prevMobileView: null,       /* string | null — back arrow destination          */
+  view:           'markets',    /* 'markets' | 'settings'                            */
+  rightPanel:     null,         /* 'token' | 'swap' | 'history' | null               */
+  mobileView:     'markets',    /* 'markets' | 'token' | 'swap' | 'history' | 'settings' */
+  prevMobileView: null,         /* string | null — back arrow destination            */
+  mobileTab:      'portfolio',  /* 'portfolio' | 'swap' | 'accounts'                 */
 
   /* ── Active content ── */
-  token: null,  /* string | null — contract address of currently viewed token */
+  token: null,  /* string | null — contract address of currently viewed token        */
 
   /* ── Live data — populated by prices.js ── */
   prices:       {},  /* { [address]: { usd, change24h, updatedAt } }                */
   tokenList:    [],  /* [{ address, symbol, name, logo, decimals }]                 */
   trades:       [],  /* persisted trade history — loaded by loadTrades() at init    */
   priceHistory: {},  /* { [address]: { '24H': [...], '7D': [...], '30D': [...] } } */
+
+  /* ── Portfolio ── */
+  portfolioTotal:    0,   /* number — total USD value across all wallets + chains    */
+  portfolioBalances: {},  /* { [chainId]: { [tokenAddress]: { balance: string, usd: number } } } */
+
+  /* ── Send flow ── */
+  sendFlow: {
+    step:         'token',  /* 'token' | 'recipient'                                */
+    token:        null,     /* { address, symbol, name, decimals, chainId } | null  */
+    recipient:    '',       /* string — raw address or ENS input                    */
+    resolvedAddr: null,     /* string | null — resolved 0x address from ENS         */
+    amount:       '',       /* string — raw numeric input                            */
+    gasEst:       null,     /* string | null — estimated gas cost in ETH            */
+  },
+
+  /* ── Receive ── */
+  receiveChain: null,  /* number | null — chainId whose QR is currently expanded    */
 
   /* ── Settings — persisted to localStorage, loaded before first render ── */
   settings: {
@@ -47,9 +69,10 @@ window.STATE = {
     autoApprove:       false,     /* boolean — approve max uint256 vs exact amount */
 
     /* Networks */
-    defaultNetwork:    1,           /* number  — chain ID: 1 | 42161 | 8453 | 10  */
-    gasPreference:     'fast',      /* string  — 'standard' | 'fast' | 'instant'  */
-    customRPC:         '',          /* string  — empty = use default for network   */
+    defaultNetwork:    1,                    /* number   — chain ID: 1 | 42161 | 8453 | 10  */
+    activeNetworks:    [1, 42161, 8453, 10], /* number[] — chains the user has enabled      */
+    gasPreference:     'fast',               /* string   — 'standard' | 'fast' | 'instant'  */
+    customRPC:         '',                   /* string   — empty = use default for network   */
 
     /* Tokens */
     tokenLists:        ['default'], /* string[] — active token list identifiers   */
@@ -123,8 +146,40 @@ function loadTrades() {
 }
 
 /* ═══════════════════════════════════════
+   loadPortfolioCache()
+   Restores portfolio balances from localStorage.
+   Called at init — stale balances are displayed instantly
+   while portfolio.js fetches fresh on-chain data.
+   Corrupt or absent storage: empty object stands.
+═══════════════════════════════════════ */
+
+function loadPortfolioCache() {
+  try {
+    const saved = localStorage.getItem('obsideum:portfolio:v1');
+    if (saved) STATE.portfolioBalances = JSON.parse(saved);
+  } catch (_) { /* corrupt storage — empty object stands */ }
+}
+
+/* ═══════════════════════════════════════
+   savePortfolioCache(chainId, balances)
+   Persists one chain's balances into STATE.portfolioBalances
+   and writes the full map to localStorage.
+   Called by portfolio.js after each successful balance fetch.
+   Exported to window scope — accessible from portfolio.js.
+═══════════════════════════════════════ */
+
+function savePortfolioCache(chainId, balances) {
+  try {
+    STATE.portfolioBalances[chainId] = balances;
+    localStorage.setItem('obsideum:portfolio:v1', JSON.stringify(STATE.portfolioBalances));
+  } catch (_) { /* storage full or blocked — fail silently */ }
+}
+
+window.savePortfolioCache = savePortfolioCache;
+
+/* ═══════════════════════════════════════
    INIT
-   Both loaders run immediately — before any HTML renders
+   All loaders run immediately — before any HTML renders
    or other scripts execute.
 
    NOTE: No window.ethereum listeners here.
@@ -135,3 +190,4 @@ function loadTrades() {
 
 loadSettings();
 loadTrades();
+loadPortfolioCache();

@@ -1,29 +1,41 @@
+
 /* ═══════════════════════════════════════════════════════════════════
-   OBSIDEUM — fx.js  ·  WebGL engine  ·  v3
+   OBSIDEUM — fx.js  ·  WebGL engine  ·  v4
    ─────────────────────────────────────────────────────────────────
-   Root fixes in this version
-   ──────────────────────────
-   v2 had two structural problems:
+   The structural fix.
 
-   1. Box glow — glow quads were flat rectangles.  A rectangle
-      blurred is still a rectangle with soft edges.  Fix: Gaussian
-      cross-section in the glow fragment shader.  exp(-3d²/hw²)
-      from the capsule centerline makes every edge seed an oval
-      bloom, so the subsequent GPU blur spreads a smooth halo.
+   Previous versions composited the glow ON TOP of the face layer
+   additively.  Face dark + glow line on top = glowing line.  That
+   is never going to look like light through cracks regardless of
+   how much you tune the blur parameters.
 
-   2. Uniform edge — single _I (midpoint intensity) meant the entire
-      edge lit at the same brightness end to end.  Fix: compute
-      _Ia at (x1,y1) and _Ib at (x2,y2) independently.  mix(Ia,Ib)
-      in the fragment shader varies intensity along the edge — one
-      end near the light is bright, the far end dim.  As the lights
-      orbit, this creates the travelling pulse Waeven described.
+   This version makes the face surfaces RECEIVE the light from the
+   cracks.  The pipeline:
 
-   The sharp SDF layer uses the same per-endpoint data so the
-   crystalline line core also dims at the edge tips, matching the
-   glow perfectly.
+     1.  Render crack seeds (edge quads) → fbGlowIn
+     2.  3-pass wide Gaussian cascade → fbWide  (the "light pool")
+         This spreads the crack light deep into the face areas.
+         Cached every 2 frames.
+     3.  Render shard faces, sampling fbWide at each fragment's
+         world position → fbLitFaces
+         Face fragment = base_dark_color + light_pool_sample * k
+         A face pixel near a hot crack: illuminated violet
+         A face pixel at the center of a large shard: black
+     4.  Tight blur → fbMed  (bright seam at crack edge)
+     5.  Composite:
+           fbLitFaces  (faces lit from below — opaque)
+         + fbMed       (tight crack seam, additive)
+         + sharp SDF   (crystalline crack outline, additive)
 
-   Everything else (BSP, 3-pass cascade, FBOs, cursor, particles)
-   unchanged from v2.
+   The breathe scalar multiplies ALL edge intensities uniformly —
+   the whole scene inhales and exhales as one crystal.
+
+   Per-endpoint intensities (_Ia, _Ib) make the glow vary along
+   each crack — brighter where the light source is nearest, dim
+   at the far end.  As lights orbit, the bright zone travels.
+
+   Color: violet rgb(156,61,187) throughout.
+   BSP seed: 0xC2E9A3F7 — same shard layout, always.
 ═══════════════════════════════════════════════════════════════════ */
 
 window.FX = (function () {
@@ -31,61 +43,60 @@ window.FX = (function () {
 
   var isMobile = window.matchMedia('(hover:none) and (pointer:coarse)').matches;
 
-  /* ── GL state ─────────────────────────────────────────────── */
-  var _canvas = null, gl = null;
+  /* ── GL ──────────────────────────────────────────────────── */
+  var _canvas=null, gl=null;
   var W=0,H=0,CW=0,CH=0,GW=0,GH=0;
 
-  /* ── Programs ─────────────────────────────────────────────── */
-  var progFace  = null;
-  var progGlow  = null;
-  var progSharp = null;
-  var progBlur  = null;
-  var progBlit  = null;
+  /* ── Programs ────────────────────────────────────────────── */
+  var progFace =null;  // shard face geometry, samples light pool
+  var progGlow =null;  // edge quads → glow seed (Gaussian profile)
+  var progSharp=null;  // SDF crack lines → screen
+  var progBlur =null;  // separable Gaussian, stride uniform
+  var progBlit =null;  // texture → fullscreen quad
 
-  /* ── Framebuffers ─────────────────────────────────────────── */
-  var fbFace=null, fbGlowIn=null, fbPing=null;
-  var fbWide1=null, fbWide2=null, fbWide=null, fbMed=null;
+  /* ── FBOs  { fb, tex, w, h } ─────────────────────────────── */
+  var fbGlowIn =null;  // crack seed texture           (GW×GH)
+  var fbPing   =null;  // blur scratch                 (GW×GH)
+  var fbWide1  =null;  // 1st wide pass result         (GW×GH)
+  var fbWide2  =null;  // 2nd wide pass result         (GW×GH)
+  var fbWide   =null;  // 3rd wide pass = light pool   (GW×GH, cached)
+  var fbMed    =null;  // tight crack seam             (GW×GH)
+  var fbLitFaces=null; // shard faces lit from below   (W×H, dynamic)
 
-  /* ── Buffers ──────────────────────────────────────────────── */
-  var bufFace=null, bufGlow=null, bufSharp=null, bufQuad=null;
+  /* ── Buffers ─────────────────────────────────────────────── */
+  var bufFace=null,bufGlow=null,bufSharp=null,bufQuad=null;
 
-  /* Vertex layouts (floats per vertex):
-     Face  [x, y, r, g, b]                          = 5
-     Glow  [x, y, lu, lv, hlen, hw, ia, ib]         = 8
-     Sharp [x, y, lu, lv, hlen, hw, ia, ib]         = 8   */
-  var FACE_F=5, GLOW_F=8, SHARP_F=8;
+  /* Vertex layouts:
+     Face  [x, y, r, g, b]                     = 5 floats
+     Edge  [x, y, lu, lv, hlen, hw, ia, ib]   = 8 floats (glow+sharp) */
+  var FACE_F=5, EDGE_F=8;
   var faceVerts=0, NEDGES=0;
   var glowData=null, sharpData=null;
 
-  /* ── Edge state ───────────────────────────────────────────── */
+  /* ── Geometry state ──────────────────────────────────────── */
   var edges=[];
 
-  /* ── Lights ───────────────────────────────────────────────── */
+  /* ── Lights ──────────────────────────────────────────────── */
   var L1={x:0,y:0,I:1.00,r:0};
   var L2={x:0,y:0,I:0.58,r:0};
 
-  /* ── Particles ────────────────────────────────────────────── */
-  var pCanvas=null,pCtx=null,PW=0,PH=0;
-  var particles=[],lastPts=0;
+  /* ── Particles ───────────────────────────────────────────── */
+  var pCanvas=null,pCtx=null,PW=0,PH=0,particles=[],lastPts=0;
   var N_UP=40,N_DOWN=40;
 
-  /* ── Cursor ───────────────────────────────────────────────── */
+  /* ── Cursor ──────────────────────────────────────────────── */
   var curEl=null,mx=0,my=0,curX=0,curY=0,prevCurX=-999,prevCurY=-999;
 
-  /* ── Loop ─────────────────────────────────────────────────── */
+  /* ── Loop ────────────────────────────────────────────────── */
   var rafId=null,running=false,pageHidden=false,wideFrame=0;
 
-  document.addEventListener('visibilitychange',function(){
-    pageHidden=document.hidden;
-  });
+  document.addEventListener('visibilitychange',function(){pageHidden=document.hidden;});
 
 
   /* ═══════════════════════════════════════════════════════════
-     MATH — seeded RNG + BSP, byte-identical to original
+     MATH
   ═══════════════════════════════════════════════════════════ */
-
-  function mkRng(seed){
-    var s=seed;
+  function mkRng(s){
     return function(){
       s|=0;s=s+0x6D2B79F5|0;
       var t=Math.imul(s^s>>>15,1|s);
@@ -93,9 +104,7 @@ window.FX = (function () {
       return((t^t>>>14)>>>0)/4294967296;
     };
   }
-  function cross(p1,p2,pt){
-    return(p2.x-p1.x)*(pt.y-p1.y)-(p2.y-p1.y)*(pt.x-p1.x);
-  }
+  function cross(p1,p2,pt){return(p2.x-p1.x)*(pt.y-p1.y)-(p2.y-p1.y)*(pt.x-p1.x);}
   function splitPoly(poly,p1,p2){
     var A=[],B=[];
     for(var i=0;i<poly.length;i++){
@@ -110,19 +119,12 @@ window.FX = (function () {
     }
     return[A,B];
   }
-  function polyArea(poly){
-    var a=0;
-    for(var i=0;i<poly.length;i++){var j=(i+1)%poly.length;a+=poly[i].x*poly[j].y-poly[j].x*poly[i].y;}
-    return Math.abs(a)*0.5;
-  }
-  function centroid(poly){
-    return{x:poly.reduce(function(s,v){return s+v.x;},0)/poly.length,
-           y:poly.reduce(function(s,v){return s+v.y;},0)/poly.length};
-  }
+  function polyArea(p){var a=0;for(var i=0;i<p.length;i++){var j=(i+1)%p.length;a+=p[i].x*p[j].y-p[j].x*p[i].y;}return Math.abs(a)*0.5;}
+  function centroid(p){return{x:p.reduce(function(s,v){return s+v.x;},0)/p.length,y:p.reduce(function(s,v){return s+v.y;},0)/p.length};}
+
   function generateShards(pw,ph){
     var rng=mkRng(0xC2E9A3F7);
-    var polys=[{x:0,y:0},{x:pw,y:0},{x:pw,y:ph},{x:0,y:ph}];
-    polys=[polys];
+    var polys=[[{x:0,y:0},{x:pw,y:0},{x:pw,y:ph},{x:0,y:ph}]];
     for(var pass=0;pass<15;pass++){
       var maxA=-1,maxIdx=0;
       for(var i=0;i<polys.length;i++){var a=polyArea(polys[i]);if(a>maxA){maxA=a;maxIdx=i;}}
@@ -140,6 +142,7 @@ window.FX = (function () {
     }
     return polys;
   }
+
   function extractEdges(polys,pw,ph){
     var map=new Map(),tol=3;
     for(var pi=0;pi<polys.length;pi++){
@@ -164,38 +167,64 @@ window.FX = (function () {
 
 
   /* ═══════════════════════════════════════════════════════════
-     GLSL
+     SHADERS
   ═══════════════════════════════════════════════════════════ */
 
+  /* Fullscreen quad */
   var VS_QUAD=[
-    'attribute vec2 a_pos;','varying vec2 v_uv;',
+    'attribute vec2 a_pos;varying vec2 v_uv;',
     'void main(){v_uv=(a_pos+1.0)*0.5;gl_Position=vec4(a_pos,0.0,1.0);}'
   ].join('\n');
 
-  /* ── Face ─────────────────────────────────────────────────── */
+  /* ── Face vertex: passes world position for light pool sample ── */
   var VS_FACE=[
-    'attribute vec2 a_pos;','attribute vec3 a_col;','uniform vec2 u_res;','varying vec3 v_col;',
-    'void main(){vec2 c=(a_pos/u_res)*2.0-1.0;gl_Position=vec4(c.x,-c.y,0.0,1.0);v_col=a_col;}'
-  ].join('\n');
-  var FS_FACE=[
-    'precision mediump float;','varying vec3 v_col;',
-    'void main(){gl_FragColor=vec4(v_col,1.0);}'
+    'attribute vec2 a_pos;','attribute vec3 a_col;','uniform vec2 u_res;',
+    'varying vec3 v_col;','varying vec2 v_wpos;',
+    'void main(){',
+    '  vec2 clip=(a_pos/u_res)*2.0-1.0;',
+    '  gl_Position=vec4(clip.x,-clip.y,0.0,1.0);',
+    '  v_col=a_col;',
+    '  v_wpos=a_pos;',  // world position in logical px — needed for pool UV
+    '}'
   ].join('\n');
 
-  /* ── Shared edge vertex shader (glow + sharp both use this) ─
-     Per-vertex data: world pos, local UV (along, perp in logical px),
-     half-length, half-width, and intensity at each endpoint.
-     Intensity is interpolated per-fragment via mix(ia,ib,u_along). */
+  /* ── Face fragment: the key shader ──────────────────────────────
+     The light pool (fbWide) holds the violet glow that has spread
+     from every active crack across the face areas.  We sample it
+     here and add the light contribution to the face's base color.
+
+     A face pixel near a hot crack:  base_dark + bright_violet_pool
+     A face pixel at shard interior: base_dark + ~0               
+
+     Pool UV derivation:
+       The pool was rendered with clip.y = -(pos.y/H)*2+1.
+       Texture (0,0) = framebuffer row 0 = clip(-1,-1) = pos(0,H).
+       So for world pos (px,py):
+         poolUV.x = px/W          (same direction)
+         poolUV.y = 1 - py/H      (Y inverted: CSS y↓, GL tex y↑)     */
+  var FS_FACE=[
+    'precision mediump float;',
+    'uniform sampler2D u_lightPool;','uniform vec2 u_res;',
+    'varying vec3 v_col;','varying vec2 v_wpos;',
+    'void main(){',
+    '  vec2 poolUV = vec2(v_wpos.x/u_res.x, 1.0-v_wpos.y/u_res.y);',
+    '  vec3 pool   = texture2D(u_lightPool, poolUV).rgb;',
+    '  // Face absorbs the light from below — brighter near cracks',
+    '  vec3 lit = v_col + pool * 3.2;',
+    '  gl_FragColor = vec4(min(vec3(1.0), lit), 1.0);',
+    '}'
+  ].join('\n');
+
+  /* ── Shared edge vertex (glow + sharp) ──────────────────────── */
   var VS_EDGE=[
     'attribute vec2  a_pos;',
-    'attribute vec2  a_uv;',    // (u along edge, v perp) — logical px
-    'attribute float a_hlen;',  // half-length of edge, logical px
-    'attribute float a_hw;',    // glow: gaussian radius  |  sharp: sdf half-width
-    'attribute float a_ia;',    // intensity at p0 (x1,y1)
-    'attribute float a_ib;',    // intensity at p1 (x2,y2)
+    'attribute vec2  a_uv;',    // local: u along edge, v perp (logical px)
+    'attribute float a_hlen;',  // half-length
+    'attribute float a_hw;',    // glow: Gaussian radius  |  sharp: SDF width
+    'attribute float a_ia;',    // intensity at p0
+    'attribute float a_ib;',    // intensity at p1
     'uniform vec2 u_res;',
-    'varying vec2  v_uv;',
-    'varying float v_hlen,v_hw,v_ia,v_ib;',
+    'varying vec2  v_uv;','varying float v_hlen,v_hw,v_ia,v_ib;',
     'void main(){',
     '  vec2 c=(a_pos/u_res)*2.0-1.0;',
     '  gl_Position=vec4(c.x,-c.y,0.0,1.0);',
@@ -203,65 +232,46 @@ window.FX = (function () {
     '}'
   ].join('\n');
 
-  /* ── Glow fragment: Gaussian oval from capsule centerline ────
-     The key fix for the box-glow problem.
-
-     exp(-3 * d² / hw²) gives a smooth circular/oval falloff from
-     the edge centerline — the bloom is a soft oval, not a blurred
-     rectangle.  The 3-pass GPU cascade then spreads this oval
-     deep into the face interiors.
-
-     mix(ia, ib, u_along) varies intensity end-to-end.  The part
-     of the edge nearest a light is brighter; the far end is dim.
-     As lights orbit this creates the travelling-pulse effect.     */
+  /* ── Glow fragment: Gaussian oval from capsule centerline ────────
+     exp(-3d²/hw²) — smooth oval, no edges, no box artifact.
+     mix(ia,ib,u) — intensity varies end to end: the pulse.        */
   var FS_GLOW=[
     'precision mediump float;',
-    'varying vec2  v_uv;',
-    'varying float v_hlen,v_hw,v_ia,v_ib;',
+    'varying vec2  v_uv;','varying float v_hlen,v_hw,v_ia,v_ib;',
     'void main(){',
-    '  // Capsule distance from centerline (logical px)',
     '  float cx  = clamp(v_uv.x,-v_hlen,v_hlen);',
-    '  float d   = length(vec2(v_uv.x-cx, v_uv.y));',
-    '  // Gaussian oval decay — no flat edges, no box',
-    '  float hw2 = v_hw*v_hw + 0.1;',
-    '  float glow = exp(-3.0*d*d/hw2);',
-    '  // Parametric position along edge [0..1]',
-    '  float denom = 2.0*v_hlen + 0.001;',
-    '  float u_along = clamp((v_uv.x+v_hlen)/denom, 0.0, 1.0);',
-    '  // Per-endpoint intensity — the pulse',
-    '  float I = mix(v_ia,v_ib,u_along);',
-    '  float a = min(1.0, I*I*1.6*glow);',
-    '  // Violet premult: rgb(156,61,187)/255',
-    '  gl_FragColor = vec4(0.612*a, 0.239*a, 0.733*a, a);',
+    '  float d   = length(vec2(v_uv.x-cx,v_uv.y));',
+    '  float glow= exp(-3.0*d*d/(v_hw*v_hw+0.1));',
+    '  float u   = clamp((v_uv.x+v_hlen)/(2.0*v_hlen+0.001),0.0,1.0);',
+    '  float I   = mix(v_ia,v_ib,u);',
+    '  float a   = min(1.0, I*I*1.8*glow);',
+    '  gl_FragColor=vec4(0.612*a,0.239*a,0.733*a,a);',  // violet premult
     '}'
   ].join('\n');
 
-  /* ── Sharp fragment: SDF capsule, intensity varies along edge ─
-     Same per-endpoint mix so the crystalline core line dims at
-     the dark end, matching the glow beneath it exactly.          */
+  /* ── Sharp fragment: SDF capsule, same per-endpoint intensity ─── */
   var FS_SHARP=[
     'precision mediump float;',
-    'varying vec2  v_uv;',
-    'varying float v_hlen,v_hw,v_ia,v_ib;',
+    'varying vec2  v_uv;','varying float v_hlen,v_hw,v_ia,v_ib;',
     'void main(){',
-    '  float cx  = clamp(v_uv.x,-v_hlen,v_hlen);',
-    '  float d   = length(vec2(v_uv.x-cx, v_uv.y));',
-    '  float a   = smoothstep(v_hw+0.5,v_hw-0.5,d);',
-    '  float u_along = clamp((v_uv.x+v_hlen)/(2.0*v_hlen+0.001),0.0,1.0);',
-    '  float I   = mix(v_ia,v_ib,u_along);',
-    '  a *= min(0.95, I*1.1);',
-    '  gl_FragColor = vec4(0.612*a, 0.239*a, 0.733*a, a);',
+    '  float cx = clamp(v_uv.x,-v_hlen,v_hlen);',
+    '  float d  = length(vec2(v_uv.x-cx,v_uv.y));',
+    '  float a  = smoothstep(v_hw+0.5,v_hw-0.5,d);',
+    '  float u  = clamp((v_uv.x+v_hlen)/(2.0*v_hlen+0.001),0.0,1.0);',
+    '  float I  = mix(v_ia,v_ib,u);',
+    '  a *= min(0.95,I*1.1);',
+    '  gl_FragColor=vec4(0.612*a,0.239*a,0.733*a,a);',
     '}'
   ].join('\n');
 
-  /* ── Gaussian blur — stride configurable ─────────────────────
-     9-tap, σ=4 in stride units.  Weights sum ≈ 1.0.
-     stride=8: ±32 glow texels per pass → ~64 display px
-     stride=2: ±8 glow texels per pass  → ~16 display px        */
+  /* ── Gaussian blur, stride uniform ─────────────────────────────
+     9-tap, σ=4 in stride units.
+     stride=8 → ±32 glow texels per pass, ~64 display px.
+     3 cascaded passes → ~155 display px spread into face areas.
+     stride=2 → ±8 glow texels, tight 16 px seam halo.           */
   var FS_BLUR=[
     'precision mediump float;',
-    'uniform sampler2D u_tex;','uniform vec2 u_texel;',
-    'uniform vec2 u_dir;','uniform float u_stride;',
+    'uniform sampler2D u_tex;','uniform vec2 u_texel,u_dir;','uniform float u_stride;',
     'varying vec2 v_uv;',
     'const float W0=0.13466,W1=0.13052,W2=0.11884,W3=0.10165,W4=0.08167;',
     'void main(){',
@@ -286,10 +296,9 @@ window.FX = (function () {
   ═══════════════════════════════════════════════════════════ */
 
   function compileShader(type,src){
-    var sh=gl.createShader(type);
-    gl.shaderSource(sh,src);gl.compileShader(sh);
+    var sh=gl.createShader(type);gl.shaderSource(sh,src);gl.compileShader(sh);
     if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))
-      throw new Error('[FX] shader:\n'+gl.getShaderInfoLog(sh)+'\n'+src);
+      throw new Error('[FX] shader:\n'+gl.getShaderInfoLog(sh));
     return sh;
   }
   function makeProgram(vs,fs){
@@ -297,8 +306,7 @@ window.FX = (function () {
     gl.attachShader(p,compileShader(gl.VERTEX_SHADER,vs));
     gl.attachShader(p,compileShader(gl.FRAGMENT_SHADER,fs));
     gl.linkProgram(p);
-    if(!gl.getProgramParameter(p,gl.LINK_STATUS))
-      throw new Error('[FX] link:\n'+gl.getProgramInfoLog(p));
+    if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error('[FX] link:\n'+gl.getProgramInfoLog(p));
     p._u={};p._a={};
     var nu=gl.getProgramParameter(p,gl.ACTIVE_UNIFORMS);
     for(var i=0;i<nu;i++){var u=gl.getActiveUniform(p,i);p._u[u.name]=gl.getUniformLocation(p,u.name);}
@@ -338,38 +346,33 @@ window.FX = (function () {
     gl.disableVertexAttribArray(ap);gl.bindTexture(gl.TEXTURE_2D,null);
   }
   function blurPass(srcTex,dst,stride){
-    var tw=1.0/GW,th=1.0/GH;
-    gl.disable(gl.BLEND);
-    gl.useProgram(progBlur);
+    var tw=1/GW,th=1/GH;
+    gl.disable(gl.BLEND);gl.useProgram(progBlur);
     gl.uniform1f(progBlur._u['u_stride'],stride);
     gl.uniform2f(progBlur._u['u_texel'],tw,th);
     gl.bindBuffer(gl.ARRAY_BUFFER,bufQuad);
     var ap=progBlur._a['a_pos'];
     gl.enableVertexAttribArray(ap);gl.vertexAttribPointer(ap,2,gl.FLOAT,false,0,0);
-    /* H-pass */
-    gl.bindFramebuffer(gl.FRAMEBUFFER,fbPing.fb);
-    gl.viewport(0,0,GW,GH);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
+    /* H */ gl.bindFramebuffer(gl.FRAMEBUFFER,fbPing.fb);gl.viewport(0,0,GW,GH);
+    gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
     gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,srcTex);
-    gl.uniform1i(progBlur._u['u_tex'],0);gl.uniform2f(progBlur._u['u_dir'],1.0,0.0);
+    gl.uniform1i(progBlur._u['u_tex'],0);gl.uniform2f(progBlur._u['u_dir'],1,0);
     gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
-    /* V-pass */
-    gl.bindFramebuffer(gl.FRAMEBUFFER,dst.fb);
-    gl.viewport(0,0,GW,GH);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.bindTexture(gl.TEXTURE_2D,fbPing.tex);
-    gl.uniform2f(progBlur._u['u_dir'],0.0,1.0);
+    /* V */ gl.bindFramebuffer(gl.FRAMEBUFFER,dst.fb);gl.viewport(0,0,GW,GH);
+    gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.bindTexture(gl.TEXTURE_2D,fbPing.tex);gl.uniform2f(progBlur._u['u_dir'],0,1);
     gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
     gl.disableVertexAttribArray(ap);gl.bindTexture(gl.TEXTURE_2D,null);
   }
 
 
   /* ═══════════════════════════════════════════════════════════
-     GEOMETRY — face VBO (static)
+     FACE GEOMETRY (static VBO, dynamic render)
   ═══════════════════════════════════════════════════════════ */
 
   function buildFaceVBO(shards){
     var ALX=Math.cos(Math.PI*0.28),ALY=Math.sin(Math.PI*0.28);
-    var midX=W*0.5,midY=H*0.5;
-    var data=[];
+    var midX=W*0.5,midY=H*0.5,data=[];
     function lerp(a,b,t){return a+t*(b-a);}
     function vRGB(c,span,bright,vx,vy){
       var proj=(vx-c.x)*ALX+(vy-c.y)*ALY;
@@ -401,19 +404,33 @@ window.FX = (function () {
     gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(data),gl.STATIC_DRAW);
   }
 
-  function bakeFaces(){
-    gl.bindFramebuffer(gl.FRAMEBUFFER,fbFace.fb);
-    gl.viewport(0,0,fbFace.w,fbFace.h);
-    gl.clearColor(0.027,0.027,0.035,1.0);gl.clear(gl.COLOR_BUFFER_BIT);
+  /* Render shard faces into fbLitFaces, sampling the light pool.
+     Called every frame.  The face VBO is static; only the light
+     pool texture changes (captured as uniform u_lightPool).      */
+  function renderLitFaces(){
+    gl.bindFramebuffer(gl.FRAMEBUFFER,fbLitFaces.fb);
+    gl.viewport(0,0,fbLitFaces.w,fbLitFaces.h);
+    gl.clearColor(0.027,0.027,0.035,1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
     gl.disable(gl.BLEND);
-    gl.useProgram(progFace);gl.uniform2f(progFace._u['u_res'],W,H);
+
+    gl.useProgram(progFace);
+    gl.uniform2f(progFace._u['u_res'],W,H);
+
+    /* Bind the light pool (fbWide) as texture unit 0 */
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D,fbWide.tex);
+    gl.uniform1i(progFace._u['u_lightPool'],0);
+
     gl.bindBuffer(gl.ARRAY_BUFFER,bufFace);
-    var s=FACE_F*4,ap=progFace._a['a_pos'],ac=progFace._a['a_col'];
-    gl.enableVertexAttribArray(ap);gl.enableVertexAttribArray(ac);
-    gl.vertexAttribPointer(ap,2,gl.FLOAT,false,s,0);
-    gl.vertexAttribPointer(ac,3,gl.FLOAT,false,s,2*4);
+    var s=FACE_F*4;
+    var aP=progFace._a['a_pos'],aC=progFace._a['a_col'];
+    gl.enableVertexAttribArray(aP);gl.enableVertexAttribArray(aC);
+    gl.vertexAttribPointer(aP,2,gl.FLOAT,false,s,0);
+    gl.vertexAttribPointer(aC,3,gl.FLOAT,false,s,2*4);
     gl.drawArrays(gl.TRIANGLES,0,faceVerts);
-    gl.disableVertexAttribArray(ap);gl.disableVertexAttribArray(ac);
+    gl.disableVertexAttribArray(aP);gl.disableVertexAttribArray(aC);
+    gl.bindTexture(gl.TEXTURE_2D,null);
     gl.bindFramebuffer(gl.FRAMEBUFFER,null);
   }
 
@@ -423,85 +440,54 @@ window.FX = (function () {
   ═══════════════════════════════════════════════════════════ */
 
   function updateLights(t){
-    var D=Math.min(W,H);
-    var a1=t*0.0000552,a2=t*0.0000769+2.14;
+    var D=Math.min(W,H),a1=t*0.0000552,a2=t*0.0000769+2.14;
     L1.x=W*0.5+Math.cos(a1)*W*0.28+Math.cos(a1*1.68)*W*0.07;
-    L1.y=H*0.5+Math.sin(a1)*H*0.22+Math.sin(a1*1.38)*H*0.06;
-    L1.r=D*0.52;
+    L1.y=H*0.5+Math.sin(a1)*H*0.22+Math.sin(a1*1.38)*H*0.06;L1.r=D*0.52;
     L2.x=W*0.5+Math.cos(a2)*W*0.20+Math.cos(a2*2.25)*W*0.05;
-    L2.y=H*0.5+Math.sin(a2)*H*0.16+Math.sin(a2*1.91)*H*0.04;
-    L2.r=D*0.36;
+    L2.y=H*0.5+Math.sin(a2)*H*0.16+Math.sin(a2*1.91)*H*0.04;L2.r=D*0.36;
   }
 
-  /* Compute raw intensity at any point from both lights. */
+  /* Raw light intensity at any point from both light sources. */
   function ptI(x,y){
-    var I=0,dx,dy,prox;
-    dx=x-L1.x;dy=y-L1.y;prox=Math.max(0,1-Math.sqrt(dx*dx+dy*dy)/L1.r);I+=prox*prox*L1.I;
-    dx=x-L2.x;dy=y-L2.y;prox=Math.max(0,1-Math.sqrt(dx*dx+dy*dy)/L2.r);I+=prox*prox*L2.I;
+    var I=0,dx,dy,p;
+    dx=x-L1.x;dy=y-L1.y;p=Math.max(0,1-Math.sqrt(dx*dx+dy*dy)/L1.r);I+=p*p*L1.I;
+    dx=x-L2.x;dy=y-L2.y;p=Math.max(0,1-Math.sqrt(dx*dx+dy*dy)/L2.r);I+=p*p*L2.I;
     return I;
   }
 
-  /* Per-endpoint intensities — the fix for uniform edges.
-     _Ia = intensity AT (x1,y1).  _Ib = intensity AT (x2,y2).
-     mix(Ia,Ib) in the shader interpolates along the edge,
-     creating the travelling pulse as the lights orbit.
-     _I = max for culling threshold only.                    */
   function updateEdgeIntensities(breathe){
     for(var ei=0;ei<NEDGES;ei++){
       var e=edges[ei];
       e._Ia=Math.min(1,ptI(e.x1,e.y1)*breathe);
       e._Ib=Math.min(1,ptI(e.x2,e.y2)*breathe);
-      e._I =Math.max(e._Ia,e._Ib);  // max of both endpoints for culling
+      e._I =Math.max(e._Ia,e._Ib);
     }
   }
 
 
   /* ═══════════════════════════════════════════════════════════
-     DYNAMIC VBO REBUILD
-     Both glow and sharp use the same 8-float layout:
-     [x, y, lu, lv, hlen, hw, ia, ib]
-     — lu,lv: local coords in logical px (u along edge, v perp)
-     — hlen:  half-length of edge in logical px
-     — hw:    glow: gaussian radius  |  sharp: visual half-width
-     — ia,ib: intensity at each endpoint (the pulse data)
+     EDGE VBO REBUILD
+     [x, y, lu, lv, hlen, hw, ia, ib]  =  8 floats per vertex
+     6 vertices per edge  =  48 floats per edge
   ═══════════════════════════════════════════════════════════ */
 
-  /* Push one capsule quad (6 vertices) into a Float32Array.
-     offset: current float index into 'arr'.
-     Returns new offset after writing 6*8=48 floats.         */
-  function pushCapsuleQuad(arr,off, x1,y1,x2,y2, hw,ia,ib){
+  function pushEdgeQuad(arr,off, x1,y1,x2,y2, hw,ia,ib){
     var dx=x2-x1,dy=y2-y1,len=Math.sqrt(dx*dx+dy*dy);
     if(len<1)return off+48;
-    var nx=dx/len,ny=dy/len;       // unit along edge
-    var px=-ny,py=nx;              // unit perpendicular
-    var hl=len*0.5;
-    /* Geometric half-width: hw + 0.5 buffer for AA / Gaussian tails */
-    var hwG=hw+0.5;
-    /* Perpendicular offsets */
-    var wpx=px*hwG,wpy=py*hwG;
-    /* Cap extensions along edge */
-    var ecx=nx*hwG,ecy=ny*hwG;
-
-    /* 4 corners of the capsule bounding rect:
-       a = p0 end, side A    b = p0 end, side B
-       c = p1 end, side A    d = p1 end, side B */
+    var nx=dx/len,ny=dy/len,px=-ny,py=nx;
+    var hl=len*0.5,hwG=hw+0.5;
+    var wpx=px*hwG,wpy=py*hwG,ecx=nx*hwG,ecy=ny*hwG;
     var ax=x1-ecx-wpx,ay=y1-ecy-wpy;
     var bx=x1-ecx+wpx,by=y1-ecy+wpy;
     var cx=x2+ecx-wpx,cy=y2+ecy-wpy;
-    var dx2=x2+ecx+wpx,dy2=y2+ecy+wpy;
-
-    /* Local UV (logical px):
-       u = along edge:  -(hl+hwG) at a/b corner, +(hl+hwG) at c/d corner
-       v = perp:        -hwG at a/c, +hwG at b/d                          */
+    var qx=x2+ecx+wpx,qy=y2+ecy+wpy;
     var u0=-(hl+hwG),u1=+(hl+hwG);
-
-    /* Triangle 0: a, b, c  —  Triangle 1: b, d, c */
-    /* vertex: [x, y, lu, lv, hlen, hw, ia, ib]     */
+    /* tri0: a,b,c  tri1: b,q,c */
     arr[off++]=ax;arr[off++]=ay;arr[off++]=u0;arr[off++]=-hwG;arr[off++]=hl;arr[off++]=hw;arr[off++]=ia;arr[off++]=ib;
     arr[off++]=bx;arr[off++]=by;arr[off++]=u0;arr[off++]=+hwG;arr[off++]=hl;arr[off++]=hw;arr[off++]=ia;arr[off++]=ib;
     arr[off++]=cx;arr[off++]=cy;arr[off++]=u1;arr[off++]=-hwG;arr[off++]=hl;arr[off++]=hw;arr[off++]=ia;arr[off++]=ib;
     arr[off++]=bx;arr[off++]=by;arr[off++]=u0;arr[off++]=+hwG;arr[off++]=hl;arr[off++]=hw;arr[off++]=ia;arr[off++]=ib;
-    arr[off++]=dx2;arr[off++]=dy2;arr[off++]=u1;arr[off++]=+hwG;arr[off++]=hl;arr[off++]=hw;arr[off++]=ia;arr[off++]=ib;
+    arr[off++]=qx;arr[off++]=qy;arr[off++]=u1;arr[off++]=+hwG;arr[off++]=hl;arr[off++]=hw;arr[off++]=ia;arr[off++]=ib;
     arr[off++]=cx;arr[off++]=cy;arr[off++]=u1;arr[off++]=-hwG;arr[off++]=hl;arr[off++]=hw;arr[off++]=ia;arr[off++]=ib;
     return off;
   }
@@ -510,13 +496,11 @@ window.FX = (function () {
     var d=glowData,off=0;
     for(var ei=0;ei<NEDGES;ei++){
       var e=edges[ei];
-      if(e._I<0.04){off+=48;continue;}  // leave zeros (degenerate at origin)
-      /* Glow gaussian radius: wider = more face illumination */
-      var hw=3.0+Math.max(e._Ia,e._Ib)*10.0;
-      off=pushCapsuleQuad(d,off,e.x1,e.y1,e.x2,e.y2,hw,e._Ia,e._Ib);
+      if(e._I<0.04){off+=48;continue;}
+      var hw=3.0+Math.max(e._Ia,e._Ib)*10.0;  // wide Gaussian radius
+      off=pushEdgeQuad(d,off,e.x1,e.y1,e.x2,e.y2,hw,e._Ia,e._Ib);
     }
-    gl.bindBuffer(gl.ARRAY_BUFFER,bufGlow);
-    gl.bufferSubData(gl.ARRAY_BUFFER,0,glowData);
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufGlow);gl.bufferSubData(gl.ARRAY_BUFFER,0,glowData);
   }
 
   function rebuildSharpVBO(){
@@ -524,59 +508,53 @@ window.FX = (function () {
     for(var ei=0;ei<NEDGES;ei++){
       var e=edges[ei];
       if(e._I<0.04){off+=48;continue;}
-      /* Sharp visual half-width: thin SDF line, scales with peak intensity */
       var hw=Math.max(0.50,0.35+Math.max(e._Ia,e._Ib)*0.55);
-      off=pushCapsuleQuad(d,off,e.x1,e.y1,e.x2,e.y2,hw,e._Ia,e._Ib);
+      off=pushEdgeQuad(d,off,e.x1,e.y1,e.x2,e.y2,hw,e._Ia,e._Ib);
     }
-    gl.bindBuffer(gl.ARRAY_BUFFER,bufSharp);
-    gl.bufferSubData(gl.ARRAY_BUFFER,0,sharpData);
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufSharp);gl.bufferSubData(gl.ARRAY_BUFFER,0,sharpData);
   }
 
 
   /* ═══════════════════════════════════════════════════════════
-     DRAW CALLS — edge binding helper (shared layout)
+     EDGE DRAW CALLS (shared attribute binding)
   ═══════════════════════════════════════════════════════════ */
 
-  function bindEdgeAttribs(prog){
-    var s=GLOW_F*4;  /* = SHARP_F*4 = 32 bytes */
-    var aP=prog._a['a_pos'],aU=prog._a['a_uv'];
-    var aL=prog._a['a_hlen'],aW=prog._a['a_hw'];
-    var aA=prog._a['a_ia'],aB=prog._a['a_ib'];
-    gl.enableVertexAttribArray(aP);gl.enableVertexAttribArray(aU);
-    gl.enableVertexAttribArray(aL);gl.enableVertexAttribArray(aW);
-    gl.enableVertexAttribArray(aA);gl.enableVertexAttribArray(aB);
-    gl.vertexAttribPointer(aP,2,gl.FLOAT,false,s,0   );  // x, y
-    gl.vertexAttribPointer(aU,2,gl.FLOAT,false,s,2*4 );  // lu, lv
-    gl.vertexAttribPointer(aL,1,gl.FLOAT,false,s,4*4 );  // hlen
-    gl.vertexAttribPointer(aW,1,gl.FLOAT,false,s,5*4 );  // hw
-    gl.vertexAttribPointer(aA,1,gl.FLOAT,false,s,6*4 );  // ia
-    gl.vertexAttribPointer(aB,1,gl.FLOAT,false,s,7*4 );  // ib
+  function bindEdge(prog,buf){
+    gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+    var s=EDGE_F*4;
+    function en(n,size,off){
+      var loc=prog._a[n];if(loc==null||loc<0)return;
+      gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,size,gl.FLOAT,false,s,off);
+    }
+    en('a_pos', 2, 0);
+    en('a_uv',  2, 2*4);
+    en('a_hlen',1, 4*4);
+    en('a_hw',  1, 5*4);
+    en('a_ia',  1, 6*4);
+    en('a_ib',  1, 7*4);
   }
-  function unbindEdgeAttribs(prog){
+  function unbindEdge(prog){
     ['a_pos','a_uv','a_hlen','a_hw','a_ia','a_ib'].forEach(function(n){
-      var loc=prog._a[n];if(loc!=null&&loc>=0)gl.disableVertexAttribArray(loc);
+      var l=prog._a[n];if(l!=null&&l>=0)gl.disableVertexAttribArray(l);
     });
   }
 
   function renderGlowEdges(){
     gl.bindFramebuffer(gl.FRAMEBUFFER,fbGlowIn.fb);
-    gl.viewport(0,0,GW,GH);
-    gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.viewport(0,0,GW,GH);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
     gl.enable(gl.BLEND);gl.blendFunc(gl.ONE,gl.ONE);
     gl.useProgram(progGlow);gl.uniform2f(progGlow._u['u_res'],W,H);
-    gl.bindBuffer(gl.ARRAY_BUFFER,bufGlow);
-    bindEdgeAttribs(progGlow);
+    bindEdge(progGlow,bufGlow);
     gl.drawArrays(gl.TRIANGLES,0,NEDGES*6);
-    unbindEdgeAttribs(progGlow);
+    unbindEdge(progGlow);
   }
 
   function renderSharpEdges(){
     gl.enable(gl.BLEND);gl.blendFunc(gl.ONE,gl.ONE);
     gl.useProgram(progSharp);gl.uniform2f(progSharp._u['u_res'],W,H);
-    gl.bindBuffer(gl.ARRAY_BUFFER,bufSharp);
-    bindEdgeAttribs(progSharp);
+    bindEdge(progSharp,bufSharp);
     gl.drawArrays(gl.TRIANGLES,0,NEDGES*6);
-    unbindEdgeAttribs(progSharp);
+    unbindEdge(progSharp);
   }
 
 
@@ -586,10 +564,9 @@ window.FX = (function () {
 
   function buildCrystal(){
     var shards=generateShards(W,H);
-    edges=extractEdges(shards,W,H);
-    NEDGES=edges.length;
-    glowData =new Float32Array(NEDGES*6*GLOW_F);
-    sharpData=new Float32Array(NEDGES*6*SHARP_F);
+    edges=extractEdges(shards,W,H);NEDGES=edges.length;
+    glowData =new Float32Array(NEDGES*6*EDGE_F);
+    sharpData=new Float32Array(NEDGES*6*EDGE_F);
     buildFaceVBO(shards);
     if(!bufGlow) bufGlow =gl.createBuffer();
     if(!bufSharp)bufSharp=gl.createBuffer();
@@ -597,25 +574,23 @@ window.FX = (function () {
     gl.bufferData(gl.ARRAY_BUFFER,glowData.byteLength, gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER,bufSharp);
     gl.bufferData(gl.ARRAY_BUFFER,sharpData.byteLength,gl.DYNAMIC_DRAW);
-    bakeFaces();
     wideFrame=0;
   }
 
   function renderCrystal(ts){
-    /* Single breathe — the whole crystal pulses as one */
     var breathe=0.62+0.38*Math.sin(ts*0.00076);
     updateLights(ts);
     updateEdgeIntensities(breathe);
     rebuildGlowVBO();
     rebuildSharpVBO();
 
-    /* Glow seed → fbGlowIn */
+    /* 1. Crack seeds → fbGlowIn */
     renderGlowEdges();
 
-    /* 3-pass wide cascade every 2 frames (stride=8):
-       pass 1: fbGlowIn → fbWide1  (~64 display px spread)
-       pass 2: fbWide1  → fbWide2  (~110 display px)
-       pass 3: fbWide2  → fbWide   (~155 display px — deep ambient fill) */
+    /* 2. 3-pass wide cascade → fbWide (the light pool).
+          Cached every 2 frames — the light moves slowly.
+          After 3 passes at stride=8: ~155 display px spread.
+          This is what the face shader samples to get illuminated. */
     wideFrame++;
     if(wideFrame%2===0){
       blurPass(fbGlowIn.tex,fbWide1,8.0);
@@ -623,32 +598,37 @@ window.FX = (function () {
       blurPass(fbWide2.tex, fbWide, 8.0);
     }
 
-    /* Medium halo every frame (stride=2): tight 16 px aura */
+    /* 3. Tight seam halo → fbMed  (every frame) */
     blurPass(fbGlowIn.tex,fbMed,2.0);
 
-    /* Composite → screen */
+    /* 4. Lit face render: shard triangles sample fbWide → fbLitFaces.
+          This is where the "light beneath" effect happens.
+          The face fragment adds pool.rgb * 3.2 to the base dark color.
+          Pixels adjacent to hot cracks become violet.
+          Pixels at shard centers stay black.                         */
+    renderLitFaces();
+
+    /* 5. Composite → screen */
     gl.bindFramebuffer(gl.FRAMEBUFFER,null);
     gl.viewport(0,0,CW,CH);
     gl.clearColor(0.027,0.027,0.035,1.0);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    blit(fbFace.tex,'none');   // opaque dark shard faces
-    blit(fbWide.tex,'add');    // wide deep violet ambient
-    blit(fbMed.tex, 'add');    // tight edge halo
-    renderSharpEdges();         // crisp core lines
+
+    blit(fbLitFaces.tex,'none');  // illuminated faces — the crystal body
+    blit(fbMed.tex,     'add');   // bright seam at each crack
+    renderSharpEdges();            // crystalline crack outline
   }
 
 
   /* ═══════════════════════════════════════════════════════════
-     PARTICLES — unchanged
+     PARTICLES
   ═══════════════════════════════════════════════════════════ */
 
   function mkParticle(dir){
-    var speed=0.12+Math.random()*0.28;
-    return{x:Math.random()*PW,
-           y:dir===1?PH+Math.random()*PH:-(Math.random()*PH),
-           vy:dir===1?-speed:speed,vx:(Math.random()-0.5)*0.08,
-           r:0.8+Math.random()*1.4,alpha:0.04+Math.random()*0.18,
-           life:0,maxLife:260+Math.random()*280,dir:dir};
+    var s=0.12+Math.random()*0.28;
+    return{x:Math.random()*PW,y:dir===1?PH+Math.random()*PH:-(Math.random()*PH),
+           vy:dir===1?-s:s,vx:(Math.random()-0.5)*0.08,r:0.8+Math.random()*1.4,
+           alpha:0.04+Math.random()*0.18,life:0,maxLife:260+Math.random()*280,dir:dir};
   }
   function initParticles(){
     particles=[];
@@ -656,8 +636,7 @@ window.FX = (function () {
     for(var j=0;j<N_DOWN;j++)particles.push(mkParticle(-1));
   }
   function renderParticles(ts){
-    if(!pCtx)return;lastPts=ts;
-    pCtx.clearRect(0,0,PW,PH);
+    if(!pCtx)return;lastPts=ts;pCtx.clearRect(0,0,PW,PH);
     for(var i=0;i<particles.length;i++){
       var p=particles[i];p.x+=p.vx;p.y+=p.vy;p.life++;
       var fi=Math.min(1,p.life/40),fo=Math.min(1,(p.maxLife-p.life)/40),a=p.alpha*fi*fo;
@@ -674,20 +653,18 @@ window.FX = (function () {
 
 
   /* ═══════════════════════════════════════════════════════════
-     CURSOR — unchanged
+     CURSOR
   ═══════════════════════════════════════════════════════════ */
 
   function initCursor(){
-    if(isMobile)return;
-    curEl=document.getElementById('cur');if(!curEl)return;
+    if(isMobile)return;curEl=document.getElementById('cur');if(!curEl)return;
     mx=window.innerWidth/2;my=window.innerHeight/2;curX=mx;curY=my;
     document.addEventListener('mousemove',function(e){mx=e.clientX;my=e.clientY;},{passive:true});
     document.addEventListener('mouseover',function(e){
       if(!curEl)return;
-      var interactive=!!e.target.closest(
-        'button,[role="button"],a,input,select,textarea,label,.token-row,.nav-item,.seg-btn,.toggle,.tab-btn');
-      var disabled=!!e.target.closest('[disabled],[aria-disabled="true"]');
-      curEl.classList.toggle('hl',interactive&&!disabled);
+      var ok=!!e.target.closest('button,[role="button"],a,input,select,textarea,label,.token-row,.nav-item,.seg-btn,.toggle,.tab-btn');
+      var dis=!!e.target.closest('[disabled],[aria-disabled="true"]');
+      curEl.classList.toggle('hl',ok&&!dis);
     });
   }
   function updateCursor(){
@@ -710,29 +687,27 @@ window.FX = (function () {
     CW=Math.round(W*dpr);CH=Math.round(H*dpr);
     GW=Math.ceil(W/2);GH=Math.ceil(H/2);
     if(_canvas){_canvas.width=CW;_canvas.height=CH;}
-    fbFace  =resizeFBO(fbFace,  W,  H);
-    fbGlowIn=resizeFBO(fbGlowIn,GW,GH);
-    fbPing  =resizeFBO(fbPing,  GW,GH);
-    fbWide1 =resizeFBO(fbWide1, GW,GH);
-    fbWide2 =resizeFBO(fbWide2, GW,GH);
-    fbWide  =resizeFBO(fbWide,  GW,GH);
-    fbMed   =resizeFBO(fbMed,   GW,GH);
+    fbGlowIn =resizeFBO(fbGlowIn, GW,GH);
+    fbPing   =resizeFBO(fbPing,   GW,GH);
+    fbWide1  =resizeFBO(fbWide1,  GW,GH);
+    fbWide2  =resizeFBO(fbWide2,  GW,GH);
+    fbWide   =resizeFBO(fbWide,   GW,GH);
+    fbMed    =resizeFBO(fbMed,    GW,GH);
+    fbLitFaces=resizeFBO(fbLitFaces,W,H);  // logical res — faces are soft
     if(pCanvas){PW=pCanvas.width=W;PH=pCanvas.height=H;initParticles();}
     buildCrystal();
   }
 
 
   /* ═══════════════════════════════════════════════════════════
-     LOOP + PUBLIC API
+     LOOP + API
   ═══════════════════════════════════════════════════════════ */
 
   function loop(ts){
-    if(!running)return;
-    rafId=requestAnimationFrame(loop);
+    if(!running)return;rafId=requestAnimationFrame(loop);
     if(pageHidden)return;
     if(gl)renderCrystal(ts);
-    renderParticles(ts);
-    updateCursor();
+    renderParticles(ts);updateCursor();
   }
 
   function init(canvas){

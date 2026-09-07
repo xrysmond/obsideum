@@ -40,27 +40,6 @@
   ];
 
   /* ════════════════════════════════════════════════════════
-     MOCK DATA
-  ════════════════════════════════════════════════════════ */
-  var MOCK_TOKEN_LIST = [
-    { address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', symbol: 'WETH', name: 'Wrapped Ether',  decimals: 18 },
-    { address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', symbol: 'WBTC', name: 'Wrapped Bitcoin', decimals: 8  },
-    { address: '0x514910771AF9Ca656af840dff83E8264EcF986CA', symbol: 'LINK', name: 'Chainlink',       decimals: 18 },
-    { address: '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984', symbol: 'UNI',  name: 'Uniswap',        decimals: 18 },
-    { address: '0x6B175474E89094C44Da98b954EedeAC495271d0F', symbol: 'DAI',  name: 'Dai Stablecoin', decimals: 18 },
-    { address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', symbol: 'USDC', name: 'USD Coin',       decimals: 6  }
-  ];
-
-  var MOCK_PRICES = {
-    '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2': { usd: 3247.82,  change24h:  2.61 },
-    '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599': { usd: 67420.00, change24h:  1.14 },
-    '0x514910771AF9Ca656af840dff83E8264EcF986CA': { usd: 14.23,    change24h: -0.52 },
-    '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984': { usd: 8.20,     change24h:  3.08 },
-    '0x6B175474E89094C44Da98b954EedeAC495271d0F': { usd: 1.00,     change24h:  0.01 },
-    '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48': { usd: 1.00,     change24h: -0.01 }
-  };
-
-  /* ════════════════════════════════════════════════════════
      SHARED SWAP STATE
   ════════════════════════════════════════════════════════ */
   var S = {
@@ -73,13 +52,13 @@
      HELPERS
   ════════════════════════════════════════════════════════ */
   function tokenList() {
-    return (window.STATE && STATE.tokenList && STATE.tokenList.length)
-      ? STATE.tokenList : MOCK_TOKEN_LIST;
+    /* Real data from tokens.js only. Never mock. Empty during loading. */
+    return (window.STATE && STATE.tokenList) || [];
   }
 
   function prices() {
+    /* Real prices from Uniswap V3 Subgraph via prices.js. */
     return (window.STATE && STATE.prices) || {};
-    /* No mock fallback — real prices from Chainlink via prices.js only */
   }
 
   function getToken(address) {
@@ -91,6 +70,27 @@
   }
 
   function logoUrl(address) {
+    /* Delegate to tokens.js for chain-aware resolution:
+     *   1. token.logoURI (https)   → direct
+     *   2. token.logoURI (ipfs://) → Cloudflare gateway
+     *   3. Trust Wallet CDN        → chain-specific folder, checksummed address
+     * Falls back to the ethereum CDN path if TOKENS is not yet loaded. */
+    if (window.TOKENS) {
+      var list    = tokenList();
+      var chainId = (window.STATE && STATE.network) || 1;
+      var found   = null;
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].address.toLowerCase() === address.toLowerCase()) {
+          found = list[i]; break;
+        }
+      }
+      var resolved = window.TOKENS.resolveLogoURI(
+        found || { address: address, logoURI: null },
+        chainId
+      );
+      if (resolved) return resolved;
+    }
+    /* Hard fallback: ethereum mainnet Trust Wallet path */
     return 'https://raw.githubusercontent.com/trustwallet/assets/master/' +
            'blockchains/ethereum/assets/' + address + '/logo.png';
   }
@@ -197,7 +197,7 @@
 
   /* ════════════════════════════════════════════════════════
      PRICE IMPACT
-     Uses Trading API output vs Chainlink/mock spot — no fee applied.
+     Uses Trading API output vs Uniswap Subgraph spot — no fee applied.
   ════════════════════════════════════════════════════════ */
   function calcPriceImpact(amountInBN, amountOutBN, fromAddress, toAddress, decimalsIn, decimalsOut) {
     var p         = prices();
@@ -283,25 +283,6 @@
      *   .quote.classicGasUseEstimateUSD       → Dutch: gas estimate USD
      *   .quote.orderId    → Dutch: orderId for /order POST and polling
      */
-  }
-
-  /* ════════════════════════════════════════════════════════
-     MOCK QUOTE — display-only fallback
-     Active when Trading API is unavailable or key is not set.
-     No fee. _isMock = true locks execute button.
-  ════════════════════════════════════════════════════════ */
-  function mockQuote(fromAddress, toAddress, amountStr) {
-    var val = parseFloat(amountStr);
-    if (!amountStr || isNaN(val) || val <= 0) return null;
-    var p  = prices();
-    var fp = p[fromAddress];
-    var tp = p[toAddress];
-    if (!fp || !tp) return null;
-    return {
-      amountOut: (val * fp.usd / tp.usd).toFixed(6),
-      gasUSD:    '2.40',
-      routing:   'CLASSIC'
-    };
   }
 
   /* ════════════════════════════════════════════════════════
@@ -1040,7 +1021,7 @@
           return;
         }
 
-        /* API unavailable (mock) → lock, no-op */
+        /* Trading API failed — no valid quote. Lock execute. */
         if (_isMock || !_lastQuote) return;
 
         var impact     = _lastQuote.impact;
@@ -1276,8 +1257,10 @@
     pickerList.innerHTML = '';
     var lower    = query.toLowerCase().trim();
     var filtered = lower ? tokenList().filter(function (t) {
-      return t.name.toLowerCase().indexOf(lower) > -1 ||
-             t.symbol.toLowerCase().indexOf(lower) > -1;
+      /* Match on symbol, name, or partial address */
+      return t.symbol.toLowerCase().indexOf(lower)  > -1 ||
+             t.name.toLowerCase().indexOf(lower)    > -1 ||
+             t.address.toLowerCase().indexOf(lower) > -1;
     }) : tokenList();
 
     filtered.forEach(function (t) {
@@ -1288,6 +1271,57 @@
     });
 
     if (!filtered.length) {
+      /* Contract address entered — attempt ERC20 on-chain lookup.
+       * The regex matches a full 42-character 0x address.
+       * We capture the query at call time and guard the async result
+       * so a stale response never overwrites a newer search. */
+      var trimmed = query.trim();
+      if (window.TOKENS && /^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
+        pickerList.innerHTML =
+          '<div class="token-list-empty">' +
+          '<span class="token-list-empty-label">Looking up address\u2026</span>' +
+          '</div>';
+
+        window.TOKENS.lookupByAddress(trimmed).then(function (token) {
+          /* Guard: user may have changed the search input while we were waiting */
+          if (!pickerSearch || pickerSearch.value.trim() !== trimmed) return;
+
+          if (!token) {
+            pickerList.innerHTML =
+              '<div class="token-list-empty">' +
+              '<span class="token-list-empty-label">No ERC-20 token found at this address.</span>' +
+              '</div>';
+            return;
+          }
+
+          pickerList.innerHTML = '';
+          var isCurrent = (S.pickerTarget === 'from')
+            ? token.address === S.fromAddress
+            : token.address === S.toAddress;
+          pickerList.appendChild(buildPickerRow(token, isCurrent));
+        }).catch(function () {
+          if (!pickerSearch || pickerSearch.value.trim() !== trimmed) return;
+          pickerList.innerHTML =
+            '<div class="token-list-empty">' +
+            '<span class="token-list-empty-label">Lookup failed. Check your connection.</span>' +
+            '</div>';
+        });
+        return;
+      }
+
+      /* No query typed — the list itself is empty.
+       * Show the right message based on why: loading, error, or no tokens on chain. */
+      if (!lower) {
+        var status = window.STATE && STATE.tokenListStatus;
+        var msg = status === 'error'   ? 'Failed to load tokens. Check your connection.'
+                : status === 'empty'   ? 'No tokens available on this network.'
+                :                        'Loading tokens\u2026';
+        pickerList.innerHTML =
+          '<div class="token-list-empty">' +
+          '<span class="token-list-empty-label">' + msg + '</span>' +
+          '</div>';
+        return;
+      }
       pickerList.innerHTML =
         '<div class="token-list-empty">' +
         '<span class="token-list-empty-label">No results for \u201c' + query + '\u201d</span>' +
