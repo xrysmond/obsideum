@@ -713,6 +713,7 @@ window.FX = (function () {
   }
 
   function init(canvas){
+    if(_canvas)return;  // already initialised — subsequent calls are no-ops
     _canvas=canvas;
     gl=canvas.getContext('webgl',{alpha:false,antialias:false})
       ||canvas.getContext('experimental-webgl',{alpha:false,antialias:false});
@@ -735,6 +736,20 @@ window.FX = (function () {
   }
   function start(){if(running)return;running=true;rafId=requestAnimationFrame(loop);}
   function stop(){running=false;if(rafId){cancelAnimationFrame(rafId);rafId=null;}}
+
+  /* ── Self-initialise ──────────────────────────────────────────
+     Runs the moment fx.js is parsed, before wallet.js / prices.js
+     / swap.js load.  Completely isolated from the rest of the app.
+     The FX.init() call in the inline script becomes a no-op.      */
+  function selfInit(){
+    var c=document.getElementById('crystal-canvas');
+    if(c){ init(c); start(); }
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',selfInit);
+  } else {
+    selfInit();
+  }
 
   return{init:init,start:start,stop:stop};
 })();
