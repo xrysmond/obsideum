@@ -81,7 +81,7 @@ window.FX = (function () {
 
   /* ── Particles ───────────────────────────────────────────── */
   var pCanvas=null,pCtx=null,PW=0,PH=0,particles=[],lastPts=0;
-  var N_UP=40,N_DOWN=40;
+  var N_UP=80,N_DOWN=80;
 
   /* ── Cursor ──────────────────────────────────────────────── */
   var curEl=null,mx=0,my=0,curX=0,curY=0,prevCurX=-999,prevCurY=-999;
@@ -494,25 +494,18 @@ window.FX = (function () {
     return off;
   }
 
-  function rebuildGlowVBO(){
-    var d=glowData,off=0;
+  /* Single loop — builds both glow and sharp VBOs in one pass.
+     Halves edge iteration and branch overhead vs two separate loops. */
+  function rebuildVBOs(){
+    var gd=glowData,sd=sharpData,gOff=0,sOff=0;
     for(var ei=0;ei<NEDGES;ei++){
       var e=edges[ei];
-      if(e._I<0.04){off+=48;continue;}
-      var hw=3.0+Math.max(e._Ia,e._Ib)*10.0;  // wide Gaussian radius
-      off=pushEdgeQuad(d,off,e.x1,e.y1,e.x2,e.y2,hw,e._Ia,e._Ib);
+      if(e._I<0.04){gOff+=48;sOff+=48;continue;}
+      var peak=Math.max(e._Ia,e._Ib);
+      gOff=pushEdgeQuad(gd,gOff,e.x1,e.y1,e.x2,e.y2,3.0+peak*10.0,e._Ia,e._Ib);
+      sOff=pushEdgeQuad(sd,sOff,e.x1,e.y1,e.x2,e.y2,Math.max(0.50,0.35+peak*0.55),e._Ia,e._Ib);
     }
-    gl.bindBuffer(gl.ARRAY_BUFFER,bufGlow);gl.bufferSubData(gl.ARRAY_BUFFER,0,glowData);
-  }
-
-  function rebuildSharpVBO(){
-    var d=sharpData,off=0;
-    for(var ei=0;ei<NEDGES;ei++){
-      var e=edges[ei];
-      if(e._I<0.04){off+=48;continue;}
-      var hw=Math.max(0.50,0.35+Math.max(e._Ia,e._Ib)*0.55);
-      off=pushEdgeQuad(d,off,e.x1,e.y1,e.x2,e.y2,hw,e._Ia,e._Ib);
-    }
+    gl.bindBuffer(gl.ARRAY_BUFFER,bufGlow); gl.bufferSubData(gl.ARRAY_BUFFER,0,glowData);
     gl.bindBuffer(gl.ARRAY_BUFFER,bufSharp);gl.bufferSubData(gl.ARRAY_BUFFER,0,sharpData);
   }
 
@@ -583,32 +576,28 @@ window.FX = (function () {
     var breathe=0.62+0.38*Math.sin(ts*0.00076);
     updateLights(ts);
     updateEdgeIntensities(breathe);
-    rebuildGlowVBO();
-    rebuildSharpVBO();
+    /* Single CPU pass — builds both glow + sharp VBOs */
+    rebuildVBOs();
 
     /* 1. Crack seeds → fbGlowIn */
     renderGlowEdges();
 
-    /* 2. 3-pass wide cascade → fbWide (the light pool).
-          Cached every 2 frames — the light moves slowly.
-          After 3 passes at stride=8: ~155 display px spread.
-          This is what the face shader samples to get illuminated. */
+    /* 2. 3-pass wide cascade → fbWide (light pool) every 2 frames.
+          fbLitFaces is also only updated on those frames — face
+          illumination doesn't change until the light pool changes,
+          so the cached texture is pixel-identical on odd frames.
+          This cuts both the cascade AND the face render to 30fps
+          with zero visible difference.                             */
     wideFrame++;
     if(wideFrame%2===0){
       blurPass(fbGlowIn.tex,fbWide1,8.0);
       blurPass(fbWide1.tex, fbWide2,8.0);
       blurPass(fbWide2.tex, fbWide, 8.0);
+      renderLitFaces();
     }
 
-    /* 3. Tight seam halo → fbMed  (every frame) */
+    /* 3. Tight seam halo → fbMed  (every frame — changes visibly) */
     blurPass(fbGlowIn.tex,fbMed,2.0);
-
-    /* 4. Lit face render: shard triangles sample fbWide → fbLitFaces.
-          This is where the "light beneath" effect happens.
-          The face fragment adds pool.rgb * 3.2 to the base dark color.
-          Pixels adjacent to hot cracks become violet.
-          Pixels at shard centers stay black.                         */
-    renderLitFaces();
 
     /* 5. Composite → screen */
     gl.bindFramebuffer(gl.FRAMEBUFFER,null);
