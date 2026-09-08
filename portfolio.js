@@ -558,41 +558,19 @@
   ───────────────────────────────────────── */
 
   function renderAssetList(container, heldTokens) {
-    var tokenList      = (window.STATE && STATE.tokenList) || [];
-    var heldAddressSet = {};
-    heldTokens.forEach(function (t) {
-      heldAddressSet[t.address.toLowerCase()] = true;
-    });
-
     container.innerHTML = '';
 
-    /* Held section */
+    if (heldTokens.length === 0) {
+      var empty = document.createElement('div');
+      empty.className   = 'portfolio-empty';
+      empty.textContent = 'No assets found on active networks.';
+      container.appendChild(empty);
+      return;
+    }
+
     heldTokens.forEach(function (token) {
       container.appendChild(buildHeldRow(token));
     });
-
-    /* Market divider + rows */
-    var divider = document.createElement('div');
-    divider.className   = 'portfolio-section-label';
-    divider.textContent = 'MARKET';
-    container.appendChild(divider);
-
-    var marketTokens = tokenList.filter(function (t) {
-      return !heldAddressSet[t.address.toLowerCase()];
-    });
-
-    if (marketTokens.length === 0) {
-      var notice = document.createElement('div');
-      notice.className   = 'portfolio-empty';
-      notice.textContent = tokenList.length === 0
-        ? 'Market data loading…'
-        : 'All discovered tokens are in your wallet.';
-      container.appendChild(notice);
-    } else {
-      marketTokens.forEach(function (token) {
-        container.appendChild(buildMarketRow(token));
-      });
-    }
   }
 
   /* ─────────────────────────────────────────
