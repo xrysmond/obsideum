@@ -103,15 +103,38 @@
       + folder + '/info/logo.png';
   }
 
+  /* Maps each chain's native token to its CANONICAL logo folder.
+   * ETH is always the Ethereum logo regardless of which L2 it's on.
+   * The chain badge (small corner overlay) shows the network.
+   * The main token logo shows the asset. These are different things. */
+  var NATIVE_LOGO_FOLDER = {
+    1:      'ethereum',    /* ETH  → Ethereum logo  */
+    10:     'ethereum',    /* ETH on Optimism        */
+    130:    'ethereum',    /* ETH on Unichain        */
+    8453:   'ethereum',    /* ETH on Base            */
+    42161:  'ethereum',    /* ETH on Arbitrum        */
+    56:     'smartchain',  /* BNB  → BSC logo        */
+    137:    'polygon',     /* POL  → Polygon logo    */
+    43114:  'avalanche',   /* AVAX → Avalanche logo  */
+  };
+
+  function nativeLogoUrl(chainId) {
+    var folder = NATIVE_LOGO_FOLDER[chainId] || CHAIN_FOLDERS[chainId];
+    if (!folder) return '';
+    return 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/'
+      + folder + '/info/logo.png';
+  }
+
   function tokenLogoUrl(address, chainId) {
+    if (!address || address === 'NATIVE') return nativeLogoUrl(chainId);
     var folder = CHAIN_FOLDERS[chainId];
-    if (!folder || !address || address === 'NATIVE') return chainLogoUrl(chainId);
+    if (!folder) return nativeLogoUrl(chainId);
     try {
       var checksumAddr = ethers.utils.getAddress(address);
       return 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/'
         + folder + '/assets/' + checksumAddr + '/logo.png';
     } catch (_) {
-      return chainLogoUrl(chainId);
+      return nativeLogoUrl(chainId);
     }
   }
 
@@ -474,14 +497,11 @@
     ].join('');
 
     div.addEventListener('click', function () {
-      setState({ token: token.address });
+      /* Pass both address AND chainId — the detail panel needs both to show
+       * the right token. Without chainId, ETH on Arbitrum and ETH on Ethereum
+       * are indistinguishable (both have address 'NATIVE'). */
+      setState({ token: token.address, tokenChainId: token.chainId });
     });
-
-    return div;
-  }
-
-  /* ─────────────────────────────────────────
-     BUILD MARKET ROW
      All other tokens from STATE.tokenList — shows live price + 24h change.
   ───────────────────────────────────────── */
 
@@ -520,14 +540,8 @@
     ].join('');
 
     div.addEventListener('click', function () {
-      setState({ token: token.address });
+      setState({ token: token.address, tokenChainId: chainId });
     });
-
-    return div;
-  }
-
-  /* ─────────────────────────────────────────
-     RENDER ASSET LIST
      Held tokens pinned top, then MARKET divider, then full token list.
   ───────────────────────────────────────── */
 
