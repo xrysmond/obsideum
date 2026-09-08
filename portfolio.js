@@ -502,6 +502,12 @@
        * are indistinguishable (both have address 'NATIVE'). */
       setState({ token: token.address, tokenChainId: token.chainId });
     });
+
+    return div;
+  }
+
+  /* ─────────────────────────────────────────
+     BUILD MARKET ROW
      All other tokens from STATE.tokenList — shows live price + 24h change.
   ───────────────────────────────────────── */
 
@@ -542,6 +548,12 @@
     div.addEventListener('click', function () {
       setState({ token: token.address, tokenChainId: chainId });
     });
+
+    return div;
+  }
+
+  /* ─────────────────────────────────────────
+     RENDER ASSET LIST
      Held tokens pinned top, then MARKET divider, then full token list.
   ───────────────────────────────────────── */
 
