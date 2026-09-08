@@ -793,11 +793,24 @@ async function checkExistingConnection() {
 }
 
 async function connect() {
-  await _privyReady;
-  if (!window._privyBridge) {
-    if (typeof showToast === 'function') showToast('Wallet service not ready. Try again.', 'terr');
+  /* Race _privyReady against a 10s timeout.
+   * On Vercel (or any deployment where esm.sh is slow), the bridge may
+   * not render before the user taps CONNECT. Without a timeout, connect()
+   * awaits forever with zero feedback. */
+  var ready = await Promise.race([
+    _privyReady,
+    new Promise(function (_, rej) {
+      setTimeout(function () { rej(new Error('timeout')); }, 10000);
+    }),
+  ]).catch(function () { return null; });
+
+  if (!ready || !window._privyBridge) {
+    if (typeof showToast === 'function') {
+      showToast('Wallet service not ready — please refresh and try again.', 'terr');
+    }
     return;
   }
+
   try {
     await window._privyBridge.login();
   } catch (err) {
@@ -812,15 +825,20 @@ async function connect() {
 
 async function disconnect() {
   closeWalletSheet();
-  if (!window._privyBridge) { window.location.href = 'index.html'; return; }
+
+  var bridge = window._privyBridge;
+
+  /* Clear provider and state immediately — UI updates before async logout */
+  window.privyProvider = null;
+  setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
+
+  if (!bridge) return;
+
   try {
-    await window._privyBridge.logout();
+    await bridge.logout();
   } catch (err) {
+    /* State already cleared — silently ignore logout errors */
     console.error('[OBSIDEUM wallet] Logout error:', err);
-    window.privyProvider = null;
-    setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
-  } finally {
-    window.location.href = 'index.html';
   }
 }
 

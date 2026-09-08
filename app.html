@@ -42,6 +42,19 @@
       overflow-y: auto;
     }
 
+    /* Accounts tab — desktop. Same grid slot as settings.
+     * Content constrained to 520px so it doesn't stretch on
+     * wide screens — matches wallet sheet proportions. */
+    .accounts-layout {
+      grid-column: 1 / -1;
+      overflow-y: auto;
+      padding: var(--sp-5);
+    }
+
+    .accounts-layout > .accounts-inner {
+      max-width: 520px;
+    }
+
     /* ── Sidebar shell ── */
     .sidebar {
       display: grid;
@@ -2405,6 +2418,14 @@
         <span class="nav-label">History</span>
       </button>
 
+      <button class="nav-item" data-view="accounts">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="8" r="4"/>
+          <path d="M4 20c0-3.9 3.6-7 8-7s8 3.1 8 7"/>
+        </svg>
+        <span class="nav-label">Accounts</span>
+      </button>
+
       <button class="nav-item nav-item--settings" id="settings-btn" data-view="settings">
         <svg class="nav-icon nav-gear" viewBox="0 0 24 24">
           <circle cx="12" cy="12" r="3"/>
@@ -2436,6 +2457,9 @@
     </div>
 
     <div id="settings-layout" class="settings-layout" hidden></div>
+    <div id="desktop-accounts" class="accounts-layout" hidden>
+      <div class="accounts-inner"><!-- mountAccountsTab() renders here --></div>
+    </div>
 
   </div>
 </div>
@@ -2600,6 +2624,7 @@
   ───────────────────────────────────────── */
   var marketsLayout  = document.getElementById('markets-layout');
   var settingsLayout = document.getElementById('settings-layout');
+  var accountsLayout = document.getElementById('desktop-accounts');
   var rightPanel     = document.getElementById('right-panel');
   var rightContent   = document.getElementById('right-panel-content');
   var panelNull      = document.getElementById('panel-null');
@@ -2778,12 +2803,26 @@
     if (view === 'settings') {
       setState({ view: 'settings' });
       marketsLayout.style.display = 'none';
-      settingsLayout.hidden = false;
+      settingsLayout.hidden       = false;
+      if (accountsLayout) accountsLayout.hidden = true;
+      closeRightPanel();
+    } else if (view === 'accounts') {
+      setState({ view: 'accounts' });
+      marketsLayout.style.display = 'none';
+      settingsLayout.hidden       = true;
+      if (accountsLayout) {
+        accountsLayout.hidden = false;
+        /* mountAccountsTab targets the .accounts-inner wrapper so content
+         * stays within the 520px max-width constraint */
+        var inner = accountsLayout.querySelector('.accounts-inner');
+        if (typeof mountAccountsTab === 'function') mountAccountsTab(inner || accountsLayout);
+      }
       closeRightPanel();
     } else {
       setState({ view: 'markets' });
       marketsLayout.style.display = '';
-      settingsLayout.hidden = true;
+      settingsLayout.hidden       = true;
+      if (accountsLayout) accountsLayout.hidden = true;
       if      (view === 'portfolio') closeRightPanel();
       else if (view === 'swap')      openRightPanel('swap');
       else if (view === 'history')   openRightPanel('history');
@@ -2802,6 +2841,8 @@
       var active;
       if (inSettings) {
         active = (dv === 'settings');
+      } else if (accountsLayout && !accountsLayout.hidden) {
+        active = (dv === 'accounts');
       } else {
         /* portfolio is active when panel is closed or showing a portfolio sub-context */
         active =
