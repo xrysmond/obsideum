@@ -26,6 +26,9 @@
   /* Request header — must be consistent across /quote, /check_approval, /swap, /order */
   var UNISWAP_ROUTER_VERSION = '2.0';
 
+  /* Native token sentinel in tokenList → API requires the zero address */
+  var NATIVE_API_ADDR = '0x0000000000000000000000000000000000000000';
+
   var WETH_ADDR = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
   var USDC_ADDR = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
 
@@ -71,6 +74,20 @@
   function prices() {
     /* Real prices from Uniswap V3 Subgraph via prices.js. */
     return (window.STATE && STATE.prices) || {};
+  }
+
+  /* Convert the 'NATIVE' sentinel to the zero address the Uniswap API requires.
+   * Docs: "To swap native tokens, use 0x0000000000000000000000000000000000000000." */
+  function toApiAddr(address) {
+    return (address === 'NATIVE') ? NATIVE_API_ADDR : address;
+  }
+
+  /* Resolve the STATE.prices key for a token address.
+   * Native tokens are stored as 'NATIVE_<chainId>' by prices.js, not 'NATIVE'. */
+  function priceKey(address) {
+    if (address !== 'NATIVE') return address;
+    var chainId = (window.STATE && STATE.network) || 1;
+    return 'NATIVE_' + chainId;
   }
 
   function getToken(address) {
@@ -153,8 +170,9 @@
   ════════════════════════════════════════════════════════ */
   function apiHeaders() {
     return {
-      'Content-Type':            'application/json',
-      'x-api-key':               UNISWAP_API_KEY,
+      'Content-Type':               'application/json',
+      'Accept':                     'application/json',
+      'x-api-key':                  UNISWAP_API_KEY,
       'x-universal-router-version': UNISWAP_ROUTER_VERSION
     };
   }
@@ -213,8 +231,8 @@
   ════════════════════════════════════════════════════════ */
   function calcPriceImpact(amountInBN, amountOutBN, fromAddress, toAddress, decimalsIn, decimalsOut) {
     var p         = prices();
-    var fromPrice = p[fromAddress] && p[fromAddress].usd;
-    var toPrice   = p[toAddress]   && p[toAddress].usd;
+    var fromPrice = p[priceKey(fromAddress)] && p[priceKey(fromAddress)].usd;
+    var toPrice   = p[priceKey(toAddress)]   && p[priceKey(toAddress)].usd;
     if (!fromPrice || !toPrice) return null;
 
     var inNum  = parseFloat(ethers.utils.formatUnits(amountInBN,  decimalsIn));
@@ -256,8 +274,8 @@
     var body = {
       type:                     'EXACT_INPUT',
       amount:                   amountInBN.toString(),
-      tokenIn:                  tokenIn,
-      tokenOut:                 tokenOut,
+      tokenIn:                  toApiAddr(tokenIn),   /* 'NATIVE' → 0x0000...0 */
+      tokenOut:                 toApiAddr(tokenOut),
       tokenInChainId:           chainId,
       tokenOutChainId:          chainId,
       swapper:                  swapper || (window.STATE && STATE.wallet) || '0x0000000000000000000000000000000000000001',
@@ -314,8 +332,10 @@
      missing — that error surfaces through onError normally.
   ════════════════════════════════════════════════════════ */
   async function checkApprovalIfNeeded(tokenAddress, amountInBN, walletAddress, chainId, signer, callbacks) {
-    /* Native ETH never needs approval */
-    if (tokenAddress === '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE') return;
+    /* Native ETH/gas token never needs Permit2 approval */
+    if (tokenAddress === 'NATIVE' ||
+        tokenAddress === NATIVE_API_ADDR ||
+        tokenAddress === '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE') return;
 
     try {
       var res = await fetch(UNISWAP_API_BASE + '/check_approval', {
@@ -605,8 +625,8 @@
   ════════════════════════════════════════════════════════ */
   function buildSwapHTML(fromToken, toToken) {
     var p     = prices();
-    var fp    = p[fromToken.address];
-    var tp    = p[toToken.address];
+    var fp    = p[priceKey(fromToken.address)];
+    var tp    = p[priceKey(toToken.address)];
     var fpStr = fp ? fmtPrice(fp.usd) : null;
     var tpStr = tp ? fmtPrice(tp.usd) : null;
 
@@ -761,11 +781,18 @@
     var networkBar = container.querySelector('#swap-network-bar');
     if (networkBar) {
       function openNetworkSwitcher() {
-        /* On mobile: switch to accounts tab. On desktop: open wallet sheet. */
+        /* On mobile: navigate to accounts tab via Phase 8D routing function.
+         * On desktop: open settings view where network toggles are accessible. */
         if (window.innerWidth < 768) {
-          setState({ mobileTab: 'accounts', mobileView: 'accounts' });
+          if (typeof window.setMobileTab === 'function') {
+            window.setMobileTab('accounts');
+          }
         } else {
-          if (typeof openWalletSheet === 'function') openWalletSheet();
+          if (typeof window.setDesktopView === 'function') {
+            window.setDesktopView('settings');
+          } else if (typeof openWalletSheet === 'function') {
+            openWalletSheet();
+          }
         }
       }
       networkBar.addEventListener('click', openNetworkSwitcher);
@@ -824,8 +851,8 @@
 
       /* Rate line — no fee, pure spot */
       var p  = prices();
-      var fp = p[S.fromAddress];
-      var tp = p[S.toAddress];
+      var fp = p[priceKey(S.fromAddress)];
+      var tp = p[priceKey(S.toAddress)];
       if (fp && tp) {
         rateEl.textContent = '1 ' + fromTok.symbol + ' \u2248 ' +
           fmtAmount(fp.usd / tp.usd) + ' ' + toTok.symbol;
@@ -1201,7 +1228,7 @@
     var p = prices();
     ['from', 'to'].forEach(function (side) {
       var addr  = side === 'from' ? S.fromAddress : S.toAddress;
-      var price = p[addr];
+      var price = p[priceKey(addr)];
       var el    = container.querySelector('#' + side + '-balance');
       if (el) el.textContent = price ? 'Price \u00b7 ' + fmtPrice(price.usd) : 'Balance \u2014';
     });
