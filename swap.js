@@ -20,11 +20,9 @@
      Approval is handled by /check_approval endpoint (Permit2).
      MEV protection is UniswapX routing, not Flashbots broadcast.
   ════════════════════════════════════════════════════════ */
-  var UNISWAP_API_KEY  = '7ydkXOSzAfaM4oimvBHhPEDsujSgqE_KTd3yhIaKGqs';
-  var UNISWAP_API_BASE = 'https://trade-api.gateway.uniswap.org/v1';
-
-  /* Request header — must be consistent across /quote, /check_approval, /swap, /order */
-  var UNISWAP_ROUTER_VERSION = '2.0';
+  /* API key lives server-side in the Vercel proxy — never in client code.
+   * Replace the URL below with your actual Vercel project URL. */
+  var UNISWAP_API_BASE = 'https://your-project.vercel.app/api/uniswap';
 
   /* Native token sentinel in tokenList → API requires the zero address */
   var NATIVE_API_ADDR = '0x0000000000000000000000000000000000000000';
@@ -169,11 +167,11 @@
      TRADING API — SHARED HEADERS
   ════════════════════════════════════════════════════════ */
   function apiHeaders() {
+    /* x-api-key and x-universal-router-version are injected server-side
+     * by the Vercel proxy (api/uniswap.js). Do not add them here. */
     return {
-      'Content-Type':               'application/json',
-      'Accept':                     'application/json',
-      'x-api-key':                  UNISWAP_API_KEY,
-      'x-universal-router-version': UNISWAP_ROUTER_VERSION
+      'Content-Type': 'application/json',
+      'Accept':       'application/json',
     };
   }
 
@@ -392,7 +390,7 @@
       }
 
       fetch(UNISWAP_API_BASE + '/orders?orderId=' + encodeURIComponent(orderId), {
-        headers: { 'x-api-key': UNISWAP_API_KEY }
+        headers: apiHeaders()
       })
       .then(function (r) { return r.json(); })
       .then(function (data) {
