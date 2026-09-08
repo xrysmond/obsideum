@@ -706,6 +706,13 @@ function _buildPrivyBridge(useEffect, usePrivy, useWallets) {
       }
     }, [ready, authenticated]);
 
+    /* Expose full wallets array — STATE.wallets drives accounts tab + _setActiveWallet */
+    useEffect(function () {
+      if (ready && wallets) {
+        setState({ wallets: wallets });
+      }
+    }, [ready, wallets]);
+
     return null;
   };
 }
@@ -805,6 +812,455 @@ document.addEventListener('state:ens',        function () { updateMobilePill(); 
 document.addEventListener('state:ensSubname', function () { updateMobilePill(); if (_sheetOpen()) renderWalletSheet(); });
 document.addEventListener('state:connected',  function () { updateMobilePill(); });
 document.addEventListener('state:network',    function () { if (_sheetOpen()) renderWalletSheet(); });
+
+/* Phase 9G — Accounts tab re-render triggers */
+document.addEventListener('state:mobileTab', function (e) {
+  if (e.detail === 'accounts') {
+    mountAccountsTab(document.getElementById('mobile-accounts'));
+  }
+});
+document.addEventListener('state:wallet', function () {
+  if (_accountsOpen()) mountAccountsTab(document.getElementById('mobile-accounts'));
+});
+document.addEventListener('state:ensSubname', function () {
+  if (_accountsOpen()) _renderENSSection();
+});
+
+/* ═══════════════════════════════════════
+   PHASE 9G — ACCOUNTS TAB
+   mountAccountsTab() is the entry point.
+   Three sub-renders: wallet list, network
+   toggles, ENS identity section.
+═══════════════════════════════════════ */
+
+var ACCOUNTS_CHAINS = [1, 10, 56, 130, 137, 8453, 42161, 43114];
+
+var ACCOUNTS_CHAIN_NAMES = {
+  1:      'Ethereum',
+  10:     'Optimism',
+  56:     'BNB Chain',
+  130:    'Unichain',
+  137:    'Polygon',
+  8453:   'Base',
+  42161:  'Arbitrum One',
+  43114:  'Avalanche',
+};
+
+/* Trust Wallet CDN folder names. Unichain (130) has no coverage. */
+var ACCOUNTS_CHAIN_FOLDERS = {
+  1:      'ethereum',
+  10:     'optimism',
+  56:     'smartchain',
+  137:    'polygon',
+  8453:   'base',
+  42161:  'arbitrum',
+  43114:  'avalanche',
+};
+
+function _chainLogoUrl(chainId) {
+  var folder = ACCOUNTS_CHAIN_FOLDERS[chainId];
+  if (!folder) return '';
+  return 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/' +
+    folder + '/info/logo.png';
+}
+
+/* ── Wallet type icon SVG ───────────────────────────────────────── */
+
+function _walletTypeIconSVG(walletClientType) {
+  /* Privy embedded → shield icon. External → key icon. */
+  if (!walletClientType || walletClientType === 'privy') {
+    return (
+      '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"' +
+        ' stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
+        '<path d="M8 2L3 4.5v4c0 2.8 2.1 5.2 5 5.8 2.9-.6 5-3 5-5.8v-4L8 2z"/>' +
+      '</svg>'
+    );
+  }
+  /* External wallet */
+  return (
+    '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"' +
+      ' stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
+      '<rect x="2" y="5" width="12" height="8" rx="1.5"/>' +
+      '<path d="M5 5V4a3 3 0 016 0v1"/>' +
+      '<circle cx="11" cy="9" r="1" fill="currentColor" stroke="none"/>' +
+    '</svg>'
+  );
+}
+
+/* ── Wallet card HTML ───────────────────────────────────────────── */
+
+function _walletCardHTML(wallet, index, isActive) {
+  var addr         = wallet.address || '';
+  var clientType   = wallet.walletClientType || 'privy';
+  var typeLabel    = clientType === 'privy' ? 'Privy · Embedded' : clientType.charAt(0).toUpperCase() + clientType.slice(1);
+  var displayIdent = (isActive && STATE.ens) ? _esc(STATE.ens) : '';
+  var activeNetworks = (STATE.settings && STATE.settings.activeNetworks) || [];
+
+  /* Network badges — show chain logos for active networks */
+  var badges = activeNetworks.slice(0, 6).map(function (chainId) {
+    var logo = _chainLogoUrl(chainId);
+    var name = ACCOUNTS_CHAIN_NAMES[chainId] || ('Chain ' + chainId);
+    return logo
+      ? '<img class="accounts-network-badge" src="' + logo + '" alt="' + _esc(name) + '">'
+      : '';
+  }).join('');
+
+  return (
+    '<div class="accounts-wallet-card' + (isActive ? ' active' : '') + '"' +
+      ' data-wallet-index="' + index + '">' +
+      '<div class="accounts-wallet-type-icon">' +
+        _walletTypeIconSVG(clientType) +
+      '</div>' +
+      '<div class="accounts-wallet-info">' +
+        (displayIdent
+          ? '<span class="accounts-wallet-ens">' + displayIdent + '</span>'
+          : '') +
+        '<span class="accounts-wallet-addr">' + _esc(_t6x4(addr)) + '</span>' +
+        (badges
+          ? '<div class="accounts-wallet-networks">' + badges + '</div>'
+          : '') +
+      '</div>' +
+      (!isActive
+        ? '<button class="accounts-use-btn" data-wallet-index="' + index + '"' +
+            ' aria-label="Switch to wallet ' + _esc(_t6x4(addr)) + '">USE</button>'
+        : '<span class="accounts-wallet-addr" style="color:var(--em-2);letter-spacing:.14em;font-size:.48rem">ACTIVE</span>'
+      ) +
+    '</div>'
+  );
+}
+
+/* ── Render wallet list ─────────────────────────────────────────── */
+
+function _renderWalletList() {
+  var container = document.getElementById('accounts-wallet-list');
+  if (!container) return;
+
+  var wallets   = STATE.wallets && STATE.wallets.length ? STATE.wallets : null;
+  var activeIdx = STATE.activeWallet || 0;
+
+  /* No Privy wallets array yet — fall back to STATE.wallet single-wallet */
+  if (!wallets) {
+    if (!STATE.wallet) {
+      container.innerHTML = '<div style="font-family:var(--fm);font-size:.68rem;color:var(--dim);padding:var(--sp-2) 0">No wallets connected.</div>';
+      return;
+    }
+    container.innerHTML = _walletCardHTML(
+      { address: STATE.wallet, walletClientType: 'privy' },
+      0,
+      true
+    );
+    return;
+  }
+
+  container.innerHTML = wallets.map(function (wallet, i) {
+    return _walletCardHTML(wallet, i, i === activeIdx);
+  }).join('');
+
+  /* Wire USE buttons */
+  container.querySelectorAll('.accounts-use-btn[data-wallet-index]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var idx = Number(btn.getAttribute('data-wallet-index'));
+      _setActiveWallet(idx);
+    });
+  });
+}
+
+/* ── Set active wallet ──────────────────────────────────────────── */
+
+function _setActiveWallet(index) {
+  var wallets = STATE.wallets;
+  if (!wallets || !wallets[index]) return;
+
+  setState({ activeWallet: index });
+
+  var wallet    = wallets[index];
+  var _provider = null;
+
+  wallet.getEthereumProvider()
+    .then(function (provider) {
+      _provider             = provider;
+      window.privyProvider  = provider;
+      return Promise.all([
+        provider.request({ method: 'eth_accounts' }),
+        provider.request({ method: 'eth_chainId'  }),
+      ]);
+    })
+    .then(function (res) {
+      if (!res) return;
+      var accounts = res[0];
+      var chainId  = res[1];
+      if (!accounts || !accounts.length) return;
+      setState({ wallet: accounts[0], connected: true, network: parseInt(chainId, 16) });
+      resolveENS(accounts[0]);
+      if (_provider) wireProviderEvents(_provider);
+      /* Re-render wallet list to reflect new active card */
+      _renderWalletList();
+    })
+    .catch(function (err) {
+      console.error('[OBSIDEUM wallet] Switch wallet failed:', err);
+      if (typeof showToast === 'function') showToast('Could not switch wallet.', 'terr');
+    });
+}
+
+/* ── Network toggles ────────────────────────────────────────────── */
+
+function _renderNetworkToggles() {
+  var container = document.getElementById('accounts-network-toggles');
+  if (!container) return;
+
+  var activeNetworks = (STATE.settings && STATE.settings.activeNetworks) || [];
+
+  container.innerHTML = ACCOUNTS_CHAINS.map(function (chainId) {
+    var isOn   = activeNetworks.indexOf(chainId) > -1;
+    var name   = ACCOUNTS_CHAIN_NAMES[chainId] || ('Chain ' + chainId);
+    var logo   = _chainLogoUrl(chainId);
+    var logoEl = logo
+      ? '<img class="accounts-network-logo" src="' + logo + '" alt="' + _esc(name) + '"' +
+          ' onerror="this.style.display=\'none\'">'
+      : '<div class="accounts-network-logo" style="background:var(--trace);display:flex;align-items:center;justify-content:center;font-family:var(--fm);font-size:.42rem;color:var(--dim)">' +
+          _esc(name.slice(0, 1)) +
+        '</div>';
+
+    return (
+      '<div class="accounts-network-row" data-chain-id="' + chainId + '">' +
+        logoEl +
+        '<span class="accounts-network-name">' + _esc(name) + '</span>' +
+        '<button class="accounts-toggle' + (isOn ? ' on' : '') + '"' +
+          ' role="switch"' +
+          ' aria-checked="' + isOn + '"' +
+          ' aria-label="Toggle ' + _esc(name) + '"' +
+          ' data-chain-id="' + chainId + '">' +
+        '</button>' +
+      '</div>'
+    );
+  }).join('');
+
+  /* Wire toggle buttons */
+  container.querySelectorAll('.accounts-toggle').forEach(function (toggle) {
+    function handleToggle() {
+      var chainId  = Number(toggle.getAttribute('data-chain-id'));
+      var current  = (STATE.settings && STATE.settings.activeNetworks) || [];
+      var isOn     = current.indexOf(chainId) > -1;
+      var updated  = isOn
+        ? current.filter(function (id) { return id !== chainId; })
+        : current.concat([chainId]);
+
+      /* Never allow disabling all chains */
+      if (updated.length === 0) return;
+
+      updateSetting('activeNetworks', updated);
+
+      /* Update visual immediately — no full re-render needed */
+      toggle.classList.toggle('on', !isOn);
+      toggle.setAttribute('aria-checked', String(!isOn));
+
+      /* Trigger re-discovery on both sides */
+      if (typeof loadTokenList  === 'function') loadTokenList();
+      if (typeof window.mountPortfolio === 'function') window.mountPortfolio();
+    }
+
+    toggle.addEventListener('click', handleToggle);
+    toggle.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleToggle(); }
+    });
+  });
+}
+
+/* ── ENS identity section ───────────────────────────────────────── */
+
+function _renderENSSection() {
+  var container = document.getElementById('accounts-ens-content');
+  if (!container) return;
+
+  if (!STATE.connected || !STATE.wallet) {
+    container.innerHTML =
+      '<span style="font-family:var(--fm);font-size:.68rem;color:var(--dim);opacity:.6">' +
+        'Connect a wallet to claim an ENS identity.' +
+      '</span>';
+    return;
+  }
+
+  /* State C — ENSv2 subname registered */
+  if (STATE.ensSubname) {
+    container.innerHTML =
+      '<div class="wsh-subname">' + _esc(STATE.ensSubname) + '</div>' +
+      '<div class="wsh-subname-note">Registered &middot; Sepolia testnet</div>';
+    return;
+  }
+
+  /* State B — has primary ENS, no subname yet */
+  var identLine = STATE.ens
+    ? '<div class="wsh-id-addr">' + _esc(STATE.ens) + '</div>'
+    : '<div class="wsh-id-addr">' + _esc(_t6x4(STATE.wallet)) + '</div>';
+
+  container.innerHTML =
+    identLine +
+    '<button class="wsh-claim-prompt" id="accts-claim-btn" aria-expanded="false">' +
+      '<span class="wsh-claim-arrow" aria-hidden="true">\u203a</span>' +
+      '<span>Claim your obsideum.eth identity</span>' +
+    '</button>' +
+    '<div id="accts-claim-form" hidden></div>';
+
+  _wireAccountsClaimPrompt();
+}
+
+function _wireAccountsClaimPrompt() {
+  var btn  = document.getElementById('accts-claim-btn');
+  var form = document.getElementById('accts-claim-form');
+  if (!btn || !form) return;
+
+  btn.addEventListener('click', function () {
+    var open = btn.getAttribute('aria-expanded') === 'true';
+    if (!open) {
+      btn.setAttribute('aria-expanded', 'true');
+      btn.classList.add('expanded');
+      form.hidden = false;
+      form.innerHTML = _acctClaimFormHTML();
+      _wireAcctClaimForm();
+    } else {
+      btn.setAttribute('aria-expanded', 'false');
+      btn.classList.remove('expanded');
+      form.hidden = true;
+      clearTimeout(_claimDebounce);
+    }
+  });
+}
+
+function _acctClaimFormHTML() {
+  return (
+    '<div class="wsh-claim-form">' +
+      '<div class="wsh-ens-row">' +
+        '<input class="wsh-ens-input" id="accts-ens-input" type="text"' +
+          ' placeholder="yourname" maxlength="32"' +
+          ' autocomplete="off" autocorrect="off" autocapitalize="none"' +
+          ' spellcheck="false" inputmode="url">' +
+        '<span class="wsh-ens-suffix">.obsideum.eth</span>' +
+      '</div>' +
+      '<div class="wsh-ens-status" id="accts-ens-status" role="status" aria-live="polite"></div>' +
+      _btnPrimary('accts-register-btn', 'REGISTER') +
+    '</div>'
+  );
+}
+
+function _wireAcctClaimForm() {
+  var input  = document.getElementById('accts-ens-input');
+  var status = document.getElementById('accts-ens-status');
+  var regBtn = document.getElementById('accts-register-btn');
+  if (!input || !status || !regBtn) return;
+
+  regBtn.hidden = true;
+  setTimeout(function () { input.focus(); }, 80);
+
+  input.addEventListener('input', function () {
+    clearTimeout(_claimDebounce);
+    var raw = input.value.toLowerCase().replace(/[^a-z0-9-]/g, '');
+    if (input.value !== raw) input.value = raw;
+
+    status.textContent = '';
+    status.className   = 'wsh-ens-status';
+    regBtn.hidden = true;
+
+    if (!raw) return;
+    if (raw.length < 3) {
+      status.textContent = 'Minimum 3 characters';
+      status.className   = 'wsh-ens-status checking';
+      return;
+    }
+
+    status.textContent = 'Checking\u2026';
+    status.className   = 'wsh-ens-status checking';
+
+    _claimDebounce = setTimeout(function () {
+      checkSubnameAvailable(raw)
+        .then(function (ok) {
+          if (input.value !== raw) return;
+          if (ok) {
+            status.textContent = '\u2713 Available';
+            status.className   = 'wsh-ens-status available';
+            regBtn.hidden      = false;
+            regBtn.disabled    = false;
+          } else {
+            status.textContent = '\u2717 Already taken';
+            status.className   = 'wsh-ens-status taken';
+          }
+        })
+        .catch(function () {
+          status.textContent = 'Could not check \u2014 try again';
+          status.className   = 'wsh-ens-status checking';
+        });
+    }, 420);
+  });
+
+  regBtn.addEventListener('click', function () {
+    var label = input.value.trim().toLowerCase();
+    if (!label || label.length < 3) return;
+    regBtn.disabled = true;
+    var s = regBtn.querySelector('span');
+    if (s) s.textContent = 'REGISTERING\u2026';
+
+    registerSubname(label)
+      .then(function () {
+        /* Phase 6B sets STATE.ensSubname → state:ensSubname fires → _renderENSSection() */
+      })
+      .catch(function () {
+        regBtn.disabled = false;
+        if (s) s.textContent = 'REGISTER';
+        var f = document.getElementById('accts-claim-form');
+        if (f) {
+          f.classList.add('wsh-shake');
+          setTimeout(function () { f.classList.remove('wsh-shake'); }, 400);
+        }
+        if (typeof showToast === 'function') showToast('Registration failed. Try again.', 'terr');
+      });
+  });
+}
+
+/* ── Mount accounts tab ─────────────────────────────────────────── */
+
+function mountAccountsTab(container) {
+  if (!container) return;
+
+  container.innerHTML =
+    '<div class="accounts-section">' +
+      '<div class="accounts-section-label">WALLETS</div>' +
+      '<div id="accounts-wallet-list" class="accounts-wallet-list"></div>' +
+      '<button class="accounts-add-wallet-btn" id="accounts-add-wallet">' +
+        '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"' +
+          ' stroke="currentColor" stroke-width="1.5"' +
+          ' stroke-linecap="round" stroke-linejoin="round">' +
+          '<path d="M7 1v12M1 7h12"/>' +
+        '</svg>' +
+        '<span>ADD WALLET</span>' +
+      '</button>' +
+    '</div>' +
+    '<div class="accounts-section">' +
+      '<div class="accounts-section-label">NETWORKS</div>' +
+      '<div id="accounts-network-toggles" class="accounts-network-toggles"></div>' +
+    '</div>' +
+    '<div class="accounts-section" id="accounts-ens-section">' +
+      '<div class="accounts-section-label">ENS IDENTITY</div>' +
+      '<div id="accounts-ens-content"></div>' +
+    '</div>';
+
+  _renderWalletList();
+  _renderNetworkToggles();
+  _renderENSSection();
+
+  var addBtn = document.getElementById('accounts-add-wallet');
+  if (addBtn) {
+    addBtn.addEventListener('click', function () {
+      if (window._privyBridge) window._privyBridge.login();
+    });
+  }
+}
+
+/* ── Accounts tab open guard ────────────────────────────────────── */
+
+function _accountsOpen() {
+  return !!(window.STATE && STATE.mobileTab === 'accounts');
+}
+
+window.mountAccountsTab = mountAccountsTab;
 
 /* ═══════════════════════════════════════
    CLICK WIRING
