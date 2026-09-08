@@ -68,7 +68,59 @@ var _disconnectTimer  = null;
 var _claimDebounce    = null;
 
 var _privyReadyResolve;
-var _privyReady = new Promise(function (res) { _privyReadyResolve = res; });
+var _privyReadyReject;
+var _privyReady = new Promise(function (res, rej) {
+  _privyReadyResolve = res;
+  _privyReadyReject  = rej;
+});
+
+/* ── Session cache ────────────────────────────────────────────────
+ * Persists the last-known connected address across page loads.
+ * On load we immediately populate STATE from cache so the UI
+ * appears connected before Privy's SDK has finished initialising
+ * (esm.sh + React init takes 1–3 s). Privy will then either
+ * confirm the session (no visible change) or, if the session has
+ * truly expired, clear STATE via the logout-detection useEffect.
+ * This is how Uniswap/Rainbow/Coinbase eliminate the "flash of
+ * disconnected state" on every page load.
+ ─────────────────────────────────────────────────────────────── */
+var _CONN_KEY = 'obsideum:lastConn:v1';
+
+function _saveConn(address, ens) {
+  try {
+    localStorage.setItem(_CONN_KEY, JSON.stringify({
+      wallet: address,
+      ens:    ens    || null,
+      ts:     Date.now(),
+    }));
+  } catch (_) {}
+}
+
+function _clearConn() {
+  try { localStorage.removeItem(_CONN_KEY); } catch (_) {}
+}
+
+function _restoreConnFromCache() {
+  try {
+    var raw    = localStorage.getItem(_CONN_KEY);
+    if (!raw) return;
+    var cached = JSON.parse(raw);
+    if (!cached || !cached.wallet) return;
+
+    /* Treat cache as stale after 7 days (Privy embedded wallet sessions
+     * persist indefinitely; external wallet reconnect is instant). */
+    var AGE_LIMIT = 7 * 24 * 3600000;
+    if (Date.now() - (cached.ts || 0) > AGE_LIMIT) { _clearConn(); return; }
+
+    /* Optimistic: show connected UI immediately.
+     * Privy will confirm or clear this within 1–3 s. */
+    setState({
+      wallet:    cached.wallet,
+      ens:       cached.ens || null,
+      connected: true,
+    });
+  } catch (_) {}
+}
 
 /* ═══════════════════════════════════════
    IDENTITY HELPERS
@@ -709,6 +761,7 @@ function _buildPrivyBridge(useEffect, usePrivy, useWallets) {
           var accounts = res[0], chainId = res[1];
           if (!accounts || !accounts.length) return;
           setState({ wallet: accounts[0], connected: true, network: parseInt(chainId, 16) });
+          _saveConn(accounts[0], STATE.ens || null);
           resolveENS(accounts[0]);
           wireProviderEvents(window.privyProvider);
         })
@@ -728,6 +781,7 @@ function _buildPrivyBridge(useEffect, usePrivy, useWallets) {
       if (!ready) return;
       if (!authenticated) {
         window.privyProvider = null;
+        _clearConn();
         if (STATE.connected) {
           setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
         }
@@ -764,9 +818,16 @@ async function initPrivy() {
     var PrivyBridge = _buildPrivyBridge(useEffect, usePrivy, useWallets);
 
     var container = document.createElement('div');
+    /* DO NOT use display:none — on some Privy versions the auth modal
+     * renders as a child of PrivyProvider rather than as a portal to body.
+     * display:none kills it silently. Use zero-size fixed positioning instead
+     * so React can render normally while the container takes no visual space. */
     container.id = 'privy-root';
     container.setAttribute('aria-hidden', 'true');
-    container.style.cssText = 'display:none!important;position:absolute;pointer-events:none;';
+    container.style.cssText =
+      'position:fixed;top:-1px;left:-1px;' +
+      'width:0;height:0;overflow:visible;' +
+      'pointer-events:none;z-index:99999;';
     document.body.appendChild(container);
 
     createRoot(container).render(
@@ -789,7 +850,8 @@ async function initPrivy() {
 ═══════════════════════════════════════ */
 
 async function checkExistingConnection() {
-  await initPrivy();
+  /* Privy initialises eagerly at wallet.js load time — nothing to do here.
+   * Kept so app.html doesn't need updating. */
 }
 
 async function connect() {
@@ -830,6 +892,7 @@ async function disconnect() {
 
   /* Clear provider and state immediately — UI updates before async logout */
   window.privyProvider = null;
+  _clearConn();
   setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
 
   if (!bridge) return;
@@ -854,7 +917,12 @@ function _sheetOpen() {
 }
 
 document.addEventListener('state:wallet',     function () { updateMobilePill(); if (_sheetOpen()) renderWalletSheet(); });
-document.addEventListener('state:ens',        function () { updateMobilePill(); if (_sheetOpen()) renderWalletSheet(); });
+document.addEventListener('state:ens',        function () {
+  updateMobilePill();
+  if (_sheetOpen()) renderWalletSheet();
+  /* Keep cache fresh with resolved ENS name */
+  if (STATE.wallet && STATE.connected) _saveConn(STATE.wallet, STATE.ens || null);
+});
 document.addEventListener('state:ensSubname', function () { updateMobilePill(); if (_sheetOpen()) renderWalletSheet(); });
 document.addEventListener('state:connected',  function () { updateMobilePill(); });
 document.addEventListener('state:network',    function () { if (_sheetOpen()) renderWalletSheet(); });
@@ -1359,8 +1427,18 @@ function mountAccountsTab(container) {
 window.mountAccountsTab = mountAccountsTab;
 
 /* ═══════════════════════════════════════
-   CLICK WIRING
+   BOOT
+   1. Restore cached session immediately → UI appears connected at paint.
+   2. Start Privy init eagerly — don't wait for the user to tap Connect.
+      By the time they tap, Privy is ready (or near-ready).
+   checkExistingConnection() in app.html is now a no-op kept for compat.
 ═══════════════════════════════════════ */
+
+_restoreConnFromCache();
+
+initPrivy().catch(function (err) {
+  console.error('[OBSIDEUM wallet] Eager Privy init failed:', err);
+});
 
 (function wireClicks() {
   /* Desktop sidebar wallet block */
