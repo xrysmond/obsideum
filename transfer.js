@@ -2,7 +2,8 @@
    OBSIDEUM — transfer.js
    Phase 9D — Send flow: token picker · ENS/address resolution ·
                amount input · gas estimation · ERC-20 + native send.
-   Phase 9E — Receive flow (appended next session).
+   Phase 9E — Receive flow: per-network address · clipboard copy ·
+               QR code via qrcode.js · one QR open at a time.
    No mock data. Real on-chain calls. Failure is always visible.
    UNCHAINED9. Built by Waeven Xrysmond.
 ═══════════════════════════════════════════════════════════════════ */
@@ -1086,7 +1087,7 @@
   }
 
   /* ─────────────────────────────────────────────────────────────────────
-     STATE LISTENERS
+     PHASE 9D — STATE LISTENERS
   ───────────────────────────────────────────────────────────────────── */
 
   /*
@@ -1125,10 +1126,339 @@
   });
 
   /* ─────────────────────────────────────────────────────────────────────
-     WINDOW EXPORTS
-     mountSendView exposed for any external callers (future history / confirm flows).
+     PHASE 9E — RECEIVE FLOW
+     mountReceiveView  — per-network address list + copy + QR
+     copyAddress       — clipboard with visual button feedback
+     toggleQR          — expand / collapse (one open at a time)
+
+     chainLogoUrl() and CHAIN_NAMES are defined in Phase 9D above.
+     CHAIN_LOGO_KEY from the plan spec is functionally identical to
+     CHAIN_FOLDERS — reusing existing implementation, no duplication.
   ───────────────────────────────────────────────────────────────────── */
 
-  window.mountSendView = mountSendView;
+  /* ── SVG icon literals — inline, no external dependency ── */
+
+  var _SVG_COPY = [
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"',
+      ' stroke="currentColor" stroke-width="1.5"',
+      ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">',
+      '<rect x="9" y="9" width="13" height="13" rx="2"/>',
+      '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+    '</svg>',
+  ].join('');
+
+  var _SVG_CHECK = [
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"',
+      ' stroke="currentColor" stroke-width="2"',
+      ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">',
+      '<polyline points="20 6 9 17 4 12"/>',
+    '</svg>',
+  ].join('');
+
+  var _SVG_QR = [
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"',
+      ' stroke="currentColor" stroke-width="1.5"',
+      ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">',
+      '<rect x="3" y="3" width="7" height="7" rx="1"/>',
+      '<rect x="14" y="3" width="7" height="7" rx="1"/>',
+      '<rect x="3" y="14" width="7" height="7" rx="1"/>',
+      '<path d="M14 14h.01M14 17h.01M14 20h.01',
+        'M17 14h.01M17 17h.01M17 20h.01',
+        'M20 14h.01M20 17h.01M20 20h.01"/>',
+    '</svg>',
+  ].join('');
+
+  /* ─────────────────────────────────────────────────────────────────────
+     mountReceiveView(container)
+     Mobile:  container is #mobile-receive (already has .receive-view class)
+     Desktop: container is #right-panel-content (wraps in .receive-view div)
+
+     Not connected → empty state.
+     Connected     → intro note + one row per chain in activeNetworks.
+  ───────────────────────────────────────────────────────────────────── */
+
+  function mountReceiveView(container) {
+    if (!container) return;
+
+    var wallet            = window.STATE && STATE.wallet;
+    var isMobileContainer = (container.id === 'mobile-receive');
+
+    /* ── Not connected ─────────────────────────────────────── */
+    if (!wallet) {
+      var emptyHtml = '<div class="portfolio-empty">Connect a wallet to receive.</div>';
+      container.innerHTML = isMobileContainer
+        ? emptyHtml
+        : '<div class="receive-view">' + emptyHtml + '</div>';
+      return;
+    }
+
+    /* ── Build network rows ────────────────────────────────── */
+    var activeNetworks = (window.STATE && STATE.settings && STATE.settings.activeNetworks)
+      || [1, 42161, 8453, 10, 137, 56, 43114, 130];
+
+    var addrTrunc = truncAddr(wallet);
+
+    var rowsHtml = activeNetworks.map(function (chainId) {
+      var name     = CHAIN_NAMES[chainId] || ('Chain ' + chainId);
+      var logo     = chainLogoUrl(chainId);
+      var chainStr = String(chainId);
+
+      return [
+        '<div class="receive-network-row" data-chain="' + chainStr + '">',
+
+          /* Network logo — fallback to abbreviated text if no CDN coverage (e.g. Unichain) */
+          logo
+            ? '<img class="receive-network-logo"'
+              + ' src="' + escHtml(logo) + '"'
+              + ' alt="' + escHtml(name) + '"'
+              + ' width="28" height="28"'
+              + ' onerror="this.style.opacity=\'0\'">'
+            : '<div class="receive-network-logo"'
+              + ' style="background:rgba(156,61,187,.10);display:flex;align-items:center;'
+              + 'justify-content:center;font-family:var(--fm);font-size:.46rem;'
+              + 'letter-spacing:.06em;color:var(--dim)">'
+              + escHtml(name.slice(0, 3).toUpperCase())
+              + '</div>',
+
+          '<div class="receive-network-info">',
+            '<span class="receive-network-name">' + escHtml(name)      + '</span>',
+            '<span class="receive-network-addr">' + escHtml(addrTrunc) + '</span>',
+          '</div>',
+
+          /* Copy button */
+          '<button class="receive-copy-btn"',
+            ' data-chain="' + chainStr + '"',
+            ' aria-label="Copy address on ' + escHtml(name) + '">',
+            _SVG_COPY,
+          '</button>',
+
+          /* QR toggle button */
+          '<button class="receive-qr-btn"',
+            ' data-chain="' + chainStr + '"',
+            ' aria-label="Show QR code for ' + escHtml(name) + '">',
+            _SVG_QR,
+          '</button>',
+
+        '</div>',
+
+        /* QR expand area — hidden by default, one canvas per chain */
+        '<div class="receive-qr-expand" id="receive-qr-' + chainStr + '" hidden>',
+          '<canvas id="receive-qr-canvas-' + chainStr + '"></canvas>',
+        '</div>',
+
+      ].join('');
+    }).join('');
+
+    var contentHtml = [
+      '<p class="receive-intro-note">',
+        'Your address is the same across all EVM networks. ',
+        'Always verify the destination network when sending to you.',
+      '</p>',
+      '<div id="receive-network-list" class="receive-network-list">',
+        rowsHtml,
+      '</div>',
+    ].join('');
+
+    /* Inject — mobile uses the container directly, desktop wraps */
+    container.innerHTML = isMobileContainer
+      ? contentHtml
+      : '<div class="receive-view">' + contentHtml + '</div>';
+
+    /* Wire event delegation on the correct scope */
+    var scope = isMobileContainer
+      ? container
+      : (container.querySelector('.receive-view') || container);
+    wireReceive(scope);
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────
+     wireReceive(scope)
+     Event delegation for copy + QR buttons — one listener, zero leaks.
+  ───────────────────────────────────────────────────────────────────── */
+
+  function wireReceive(scope) {
+    if (!scope) return;
+    scope.addEventListener('click', function (e) {
+      var copyBtn = e.target.closest('.receive-copy-btn');
+      if (copyBtn) {
+        copyAddress(Number(copyBtn.dataset.chain));
+        return;
+      }
+      var qrBtn = e.target.closest('.receive-qr-btn');
+      if (qrBtn) {
+        toggleQR(Number(qrBtn.dataset.chain));
+      }
+    });
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────
+     copyAddress(chainId)
+     Writes STATE.wallet to clipboard.
+     Success → copy icon swaps to checkmark (600ms), then restores.
+     Failure → "Failed" label for 2s, then restores.
+  ───────────────────────────────────────────────────────────────────── */
+
+  function copyAddress(chainId) {
+    var wallet = window.STATE && STATE.wallet;
+    if (!wallet) return;
+
+    var btn = document.querySelector('.receive-copy-btn[data-chain="' + chainId + '"]');
+    if (!btn) return;
+
+    navigator.clipboard.writeText(wallet).then(function () {
+      /* Swap to checkmark */
+      var prevHtml = btn.innerHTML;
+      btn.innerHTML    = _SVG_CHECK;
+      btn.style.color  = 'var(--up)';
+
+      setTimeout(function () {
+        if (btn.isConnected) {
+          btn.innerHTML   = prevHtml;
+          btn.style.color = '';
+        }
+      }, 600);
+
+    }).catch(function () {
+      /* Clipboard permission denied — show brief text */
+      var prevHtml = btn.innerHTML;
+      btn.innerHTML = [
+        '<span style="font-family:var(--fm);font-size:.46rem;letter-spacing:.06em;',
+          'color:var(--dn);white-space:nowrap">Failed</span>',
+      ].join('');
+
+      setTimeout(function () {
+        if (btn.isConnected) btn.innerHTML = prevHtml;
+      }, 2000);
+    });
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────
+     toggleQR(chainId)
+     Collapses any open QR panel first (one open at a time).
+     Expand  → QRCode.toCanvas() with violet-on-dark colors.
+     Collapse → ctx.clearRect() + hidden.
+     QRCode not loaded → "QR unavailable" message.
+  ───────────────────────────────────────────────────────────────────── */
+
+  function toggleQR(chainId) {
+    var qrExpand = document.getElementById('receive-qr-' + chainId);
+    if (!qrExpand) return;
+
+    var isExpanding = qrExpand.hidden;
+
+    /* Close all currently open QR panels (other than this one) */
+    document.querySelectorAll('.receive-qr-expand:not([hidden])').forEach(function (el) {
+      if (el === qrExpand) return;
+      var cv = el.querySelector('canvas');
+      if (cv) {
+        try {
+          cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
+        } catch (_) {}
+      }
+      el.hidden = true;
+    });
+
+    /* ── Collapse ──────────────────────────────────────────── */
+    if (!isExpanding) {
+      var cv = qrExpand.querySelector('canvas');
+      if (cv) {
+        try {
+          cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
+        } catch (_) {}
+      }
+      qrExpand.hidden = true;
+      return;
+    }
+
+    /* ── Expand ────────────────────────────────────────────── */
+    qrExpand.hidden = false;
+
+    var wallet = window.STATE && STATE.wallet;
+    if (!wallet) return;
+
+    var canvas = document.getElementById('receive-qr-canvas-' + chainId);
+    if (!canvas) return;
+
+    /* QRCode library not loaded (CDN failure) */
+    if (typeof QRCode === 'undefined') {
+      qrExpand.innerHTML = [
+        '<p style="font-family:var(--fm);font-size:.60rem;letter-spacing:.08em;',
+          'color:var(--dim);text-align:center;padding:var(--sp-4)">QR unavailable</p>',
+      ].join('');
+      return;
+    }
+
+    QRCode.toCanvas(
+      canvas,
+      wallet,
+      {
+        width:                180,
+        color:                { dark: '#9C3DBB', light: '#070709' },
+        errorCorrectionLevel: 'M',
+      },
+      function (err) {
+        if (err) {
+          /* Generation failed — replace canvas with error message */
+          qrExpand.innerHTML = [
+            '<p style="font-family:var(--fm);font-size:.60rem;letter-spacing:.08em;',
+              'color:var(--dn);text-align:center;padding:var(--sp-4)">QR generation failed</p>',
+          ].join('');
+        }
+      }
+    );
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────
+     PHASE 9E — STATE LISTENERS
+  ───────────────────────────────────────────────────────────────────── */
+
+  /*
+   * receive:mount — dispatched by Phase 8D action button handler.
+   * Detects mobile vs desktop by viewport width.
+   */
+  document.addEventListener('receive:mount', function () {
+    var isMobile  = window.innerWidth < 768;
+    var container = isMobile
+      ? document.getElementById('mobile-receive')
+      : document.getElementById('right-panel-content');
+    if (!container) return;
+    mountReceiveView(container);
+  });
+
+  /*
+   * panel:render — remove receive-view wrapper when right panel navigates away.
+   * Mirrors the equivalent cleanup listener from Phase 9D (send flow).
+   */
+  document.addEventListener('panel:render', function (e) {
+    if (e.detail === 'receive') return;
+    var container = document.getElementById('right-panel-content');
+    if (!container) return;
+    var receiveWrap = container.querySelector('.receive-view');
+    if (receiveWrap) container.removeChild(receiveWrap);
+  });
+
+  /*
+   * state:wallet — re-render receive view when wallet connects or changes.
+   * Keeps address display current without requiring user to close and reopen.
+   */
+  document.addEventListener('state:wallet', function () {
+    /* Mobile: re-render if receive is the active sub-view */
+    var mobileReceive = document.getElementById('mobile-receive');
+    if (mobileReceive && !mobileReceive.hidden) {
+      mountReceiveView(mobileReceive);
+    }
+    /* Desktop: re-render if receive is the open right panel */
+    if (window.STATE && STATE.rightPanel === 'receive') {
+      var rightContent = document.getElementById('right-panel-content');
+      if (rightContent) mountReceiveView(rightContent);
+    }
+  });
+
+  /* ─────────────────────────────────────────────────────────────────────
+     WINDOW EXPORTS
+  ───────────────────────────────────────────────────────────────────── */
+
+  window.mountSendView    = mountSendView;
+  window.mountReceiveView = mountReceiveView;
 
 }());
