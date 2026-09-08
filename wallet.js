@@ -4,10 +4,11 @@
    Phase 6C: Wallet bottom sheet — three states, ENS claim
              form, recent trades, network switch, copy address.
    Phase 6B: ENS + ENSv2 registration (stubs here).
+   Phase 9G: Accounts tab — mobile + desktop.
 
    Architecture: micro-island React pattern.
    Invisible React root wraps PrivyProvider, bridges auth state
-   to vanilla JS via window._privyBridge. No React elsewhere.
+   to window._privyBridge. No React elsewhere.
 
    Provider contract:
      window.privyProvider — EIP-1193.
@@ -15,7 +16,7 @@
 
    DOM ownership:
      2C wiring  → desktop sidebar wallet/network text updates
-     wallet.js  → mobile pill · wallet sheet · sidebar click
+     wallet.js  → mobile pill · wallet sheet · accounts tab · sidebar click
 
    UNCHAINED9. Built by Waeven Xrysmond.
 ═══════════════════════════════════════════════════════════ */
@@ -33,8 +34,6 @@ var PRIVY_CONFIG = {
     theme:       'dark',
     accentColor: '#9C3DBB',
   },
-  /* email first — Privy embedded wallet default for new users.
-     'wallet' stays available for MetaMask/Brave power users. */
   loginMethods: ['email', 'google', 'twitter', 'wallet'],
   embeddedWallets: {
     ethereum: {
@@ -129,6 +128,18 @@ function _esc(str) {
 function _btnPrimary(id, label) {
   return (
     '<button class="btn btn-primary btn-full"' + (id ? ' id="' + id + '"' : '') + '>' +
+      '<div class="btn-pulse-ring"></div>' +
+      '<div class="btn-inner">' +
+        '<div class="glass-sheen"></div>' +
+        '<span>' + label + '</span>' +
+      '</div>' +
+    '</button>'
+  );
+}
+
+function _btnWhite(id, label) {
+  return (
+    '<button class="btn btn-white"' + (id ? ' id="' + id + '"' : '') + '>' +
       '<div class="btn-pulse-ring"></div>' +
       '<div class="btn-inner">' +
         '<div class="glass-sheen"></div>' +
@@ -636,6 +647,14 @@ function wireProviderEvents(provider) {
    PRIVY MICRO-ISLAND
    Invisible React root bridges Privy's hooks
    to window._privyBridge for vanilla JS use.
+
+   Exposed on _privyBridge:
+     login()      — opens Privy auth modal (all methods)
+     logout()     — clears session
+     linkWallet() — connector picker without re-auth (use for ADD WALLET)
+     linkGoogle() — link Google account to existing Privy user
+     linkTwitter()— link Twitter account to existing Privy user
+     linkEmail()  — link email to existing Privy user
 ═══════════════════════════════════════ */
 
 function _buildPrivyBridge(useEffect, usePrivy, useWallets) {
@@ -653,11 +672,20 @@ function _buildPrivyBridge(useEffect, usePrivy, useWallets) {
       : null;
     var primaryAddr = primaryWallet ? primaryWallet.address : null;
 
-    /* Expose bridge every render — keeps login/logout refs fresh */
+    /* Expose bridge every render — keeps all method refs fresh.
+     * Link methods require an authenticated session — Privy handles the guard. */
     useEffect(function () {
       window._privyBridge = {
-        login: login, logout: logout,
-        ready: ready, authenticated: authenticated, user: user,
+        login:        login,
+        logout:       logout,
+        ready:        ready,
+        authenticated: authenticated,
+        user:         user,
+        /* Link methods — use these when user is already authenticated */
+        linkWallet:   p.linkWallet,
+        linkGoogle:   p.linkGoogle,
+        linkTwitter:  p.linkTwitter,
+        linkEmail:    p.linkEmail,
       };
       if (ready) _privyReadyResolve();
     });
@@ -799,7 +827,7 @@ async function disconnect() {
 /* ═══════════════════════════════════════
    STATE EVENT LISTENERS
    2C owns desktop sidebar updates (state:wallet, state:ens, state:network).
-   wallet.js owns mobile pill + sheet re-render.
+   wallet.js owns mobile pill + sheet re-render + accounts tab.
 ═══════════════════════════════════════ */
 
 function _sheetOpen() {
@@ -813,15 +841,48 @@ document.addEventListener('state:ensSubname', function () { updateMobilePill(); 
 document.addEventListener('state:connected',  function () { updateMobilePill(); });
 document.addEventListener('state:network',    function () { if (_sheetOpen()) renderWalletSheet(); });
 
-/* Phase 9G — Accounts tab re-render triggers */
+/* ── Accounts tab re-render triggers ───────────────────────────── */
+
+/* Returns the currently-visible accounts container, or null */
+function _getAccountsContainer() {
+  if (window.innerWidth >= 768) {
+    var d = document.getElementById('desktop-accounts');
+    return (d && !d.hidden) ? d : null;
+  }
+  return (window.STATE && STATE.mobileTab === 'accounts')
+    ? document.getElementById('mobile-accounts')
+    : null;
+}
+
+/* Returns true when the accounts view is open on either breakpoint */
+function _accountsOpen() {
+  if (!window.STATE) return false;
+  if (STATE.mobileTab === 'accounts') return true;
+  var d = document.getElementById('desktop-accounts');
+  return !!(d && !d.hidden);
+}
+
+/* Mobile — bottom nav switches to accounts */
 document.addEventListener('state:mobileTab', function (e) {
   if (e.detail === 'accounts') {
     mountAccountsTab(document.getElementById('mobile-accounts'));
   }
 });
-document.addEventListener('state:wallet', function () {
-  if (_accountsOpen()) mountAccountsTab(document.getElementById('mobile-accounts'));
+
+/* Desktop — sidebar nav switches to accounts */
+document.addEventListener('state:view', function (e) {
+  if (e.detail === 'accounts') {
+    mountAccountsTab(document.getElementById('desktop-accounts'));
+  }
 });
+
+/* Wallet connected/switched — re-render whichever accounts view is open */
+document.addEventListener('state:wallet', function () {
+  var c = _getAccountsContainer();
+  if (c) mountAccountsTab(c);
+});
+
+/* ENS subname registered — refresh ENS section only */
 document.addEventListener('state:ensSubname', function () {
   if (_accountsOpen()) _renderENSSection();
 });
@@ -829,8 +890,8 @@ document.addEventListener('state:ensSubname', function () {
 /* ═══════════════════════════════════════
    PHASE 9G — ACCOUNTS TAB
    mountAccountsTab() is the entry point.
-   Three sub-renders: wallet list, network
-   toggles, ENS identity section.
+   Called by Phase 8D (mobile) and app.html setDesktopView (desktop).
+   Three sub-renders: wallet list, network toggles, ENS identity section.
 ═══════════════════════════════════════ */
 
 var ACCOUNTS_CHAINS = [1, 10, 56, 130, 137, 8453, 42161, 43114];
@@ -867,7 +928,7 @@ function _chainLogoUrl(chainId) {
 /* ── Wallet type icon SVG ───────────────────────────────────────── */
 
 function _walletTypeIconSVG(walletClientType) {
-  /* Privy embedded → shield icon. External → key icon. */
+  /* Privy embedded → shield icon. External → wallet icon. */
   if (!walletClientType || walletClientType === 'privy') {
     return (
       '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"' +
@@ -905,8 +966,18 @@ function _walletCardHTML(wallet, index, isActive) {
       : '';
   }).join('');
 
+  /* Active card: tappable — opens wallet sheet to view address, disconnect, etc.
+   * Inactive card: USE button switches the active wallet. */
+  var trailing = isActive
+    ? '<span class="accounts-wallet-active-label">ACTIVE\u00a0<span class="accounts-wallet-chevron" aria-hidden="true">\u203a</span></span>'
+    : '<button class="accounts-use-btn" data-wallet-index="' + index + '"' +
+        ' aria-label="Switch to wallet ' + _esc(_t6x4(addr)) + '">USE</button>';
+
   return (
     '<div class="accounts-wallet-card' + (isActive ? ' active' : '') + '"' +
+      (isActive
+        ? ' role="button" tabindex="0" aria-label="Open wallet details — ' + _esc(_t6x4(addr)) + '"'
+        : '') +
       ' data-wallet-index="' + index + '">' +
       '<div class="accounts-wallet-type-icon">' +
         _walletTypeIconSVG(clientType) +
@@ -916,15 +987,12 @@ function _walletCardHTML(wallet, index, isActive) {
           ? '<span class="accounts-wallet-ens">' + displayIdent + '</span>'
           : '') +
         '<span class="accounts-wallet-addr">' + _esc(_t6x4(addr)) + '</span>' +
+        '<span class="accounts-wallet-type">' + _esc(typeLabel) + '</span>' +
         (badges
           ? '<div class="accounts-wallet-networks">' + badges + '</div>'
           : '') +
       '</div>' +
-      (!isActive
-        ? '<button class="accounts-use-btn" data-wallet-index="' + index + '"' +
-            ' aria-label="Switch to wallet ' + _esc(_t6x4(addr)) + '">USE</button>'
-        : '<span class="accounts-wallet-addr" style="color:var(--em-2);letter-spacing:.14em;font-size:.48rem">ACTIVE</span>'
-      ) +
+      trailing +
     '</div>'
   );
 }
@@ -941,7 +1009,8 @@ function _renderWalletList() {
   /* No Privy wallets array yet — fall back to STATE.wallet single-wallet */
   if (!wallets) {
     if (!STATE.wallet) {
-      container.innerHTML = '<div style="font-family:var(--fm);font-size:.68rem;color:var(--dim);padding:var(--sp-2) 0">No wallets connected.</div>';
+      container.innerHTML =
+        '<div class="accounts-empty-state">No wallets connected.</div>';
       return;
     }
     container.innerHTML = _walletCardHTML(
@@ -949,18 +1018,25 @@ function _renderWalletList() {
       0,
       true
     );
-    return;
+  } else {
+    container.innerHTML = wallets.map(function (wallet, i) {
+      return _walletCardHTML(wallet, i, i === activeIdx);
+    }).join('');
+
+    /* Wire USE buttons on inactive cards */
+    container.querySelectorAll('.accounts-use-btn[data-wallet-index]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var idx = Number(btn.getAttribute('data-wallet-index'));
+        _setActiveWallet(idx);
+      });
+    });
   }
 
-  container.innerHTML = wallets.map(function (wallet, i) {
-    return _walletCardHTML(wallet, i, i === activeIdx);
-  }).join('');
-
-  /* Wire USE buttons */
-  container.querySelectorAll('.accounts-use-btn[data-wallet-index]').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      var idx = Number(btn.getAttribute('data-wallet-index'));
-      _setActiveWallet(idx);
+  /* Active card tap → open wallet sheet (address, copy, disconnect) */
+  container.querySelectorAll('.accounts-wallet-card.active').forEach(function (card) {
+    card.addEventListener('click', openWalletSheet);
+    card.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openWalletSheet(); }
     });
   });
 }
@@ -1017,8 +1093,8 @@ function _renderNetworkToggles() {
     var logoEl = logo
       ? '<img class="accounts-network-logo" src="' + logo + '" alt="' + _esc(name) + '"' +
           ' onerror="this.style.display=\'none\'">'
-      : '<div class="accounts-network-logo" style="background:var(--trace);display:flex;align-items:center;justify-content:center;font-family:var(--fm);font-size:.42rem;color:var(--dim)">' +
-          _esc(name.slice(0, 1)) +
+      : '<div class="accounts-network-logo accounts-network-logo--fallback">' +
+          _esc(name.slice(0, 2)) +
         '</div>';
 
     return (
@@ -1074,9 +1150,7 @@ function _renderENSSection() {
 
   if (!STATE.connected || !STATE.wallet) {
     container.innerHTML =
-      '<span style="font-family:var(--fm);font-size:.68rem;color:var(--dim);opacity:.6">' +
-        'Connect a wallet to claim an ENS identity.' +
-      '</span>';
+      '<span class="accounts-ens-hint">Connect a wallet to claim an ENS identity.</span>';
     return;
   }
 
@@ -1224,14 +1298,8 @@ function mountAccountsTab(container) {
     '<div class="accounts-section">' +
       '<div class="accounts-section-label">WALLETS</div>' +
       '<div id="accounts-wallet-list" class="accounts-wallet-list"></div>' +
-      '<button class="accounts-add-wallet-btn" id="accounts-add-wallet">' +
-        '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"' +
-          ' stroke="currentColor" stroke-width="1.5"' +
-          ' stroke-linecap="round" stroke-linejoin="round">' +
-          '<path d="M7 1v12M1 7h12"/>' +
-        '</svg>' +
-        '<span>ADD WALLET</span>' +
-      '</button>' +
+      /* btn-white: secondary CTA — correct tier for ADD WALLET */
+      _btnWhite('accounts-add-wallet', '+ ADD WALLET') +
     '</div>' +
     '<div class="accounts-section">' +
       '<div class="accounts-section-label">NETWORKS</div>' +
@@ -1249,15 +1317,25 @@ function mountAccountsTab(container) {
   var addBtn = document.getElementById('accounts-add-wallet');
   if (addBtn) {
     addBtn.addEventListener('click', function () {
-      if (window._privyBridge) window._privyBridge.login();
+      if (!window._privyBridge) return;
+      /*
+       * linkWallet() — shows Privy's connector picker without requiring
+       * the user to log out and back in. This is the correct call for
+       * "add another wallet while already authenticated". It always presents
+       * all available connection methods (MetaMask, WalletConnect, Brave, etc.)
+       * regardless of which wallet is currently active.
+       *
+       * login() is wrong here — when already authenticated, Privy may
+       * auto-skip the method picker and reconnect the existing wallet.
+       */
+      if (typeof window._privyBridge.linkWallet === 'function') {
+        window._privyBridge.linkWallet();
+      } else {
+        /* Privy version fallback — link methods not yet available */
+        window._privyBridge.login();
+      }
     });
   }
-}
-
-/* ── Accounts tab open guard ────────────────────────────────────── */
-
-function _accountsOpen() {
-  return !!(window.STATE && STATE.mobileTab === 'accounts');
 }
 
 window.mountAccountsTab = mountAccountsTab;
