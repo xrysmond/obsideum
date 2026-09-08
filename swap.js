@@ -22,7 +22,7 @@
   ════════════════════════════════════════════════════════ */
   /* API key lives server-side in the Vercel proxy — never in client code.
    * Replace the URL below with your actual Vercel project URL. */
-  var UNISWAP_API_BASE = 'https://your-project.vercel.app/api/uniswap';
+  var UNISWAP_API_BASE = 'https://obsideum.vercel.app/api/uniswap';
 
   /* Native token sentinel in tokenList → API requires the zero address */
   var NATIVE_API_ADDR = '0x0000000000000000000000000000000000000000';
