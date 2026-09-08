@@ -1,26 +1,24 @@
-
-/* prices.js — Phase 7A: Chainlink live prices · 15s polling
+/* prices.js — Phase 9C: Multi-chain token discovery via Uniswap V3 Subgraph
+ *           — Phase 9B: Uniswap V3 Subgraph live prices · 15s polling (replaces Phase 7A Chainlink)
  *           — Phase 7B: Uniswap V3 subgraph · real price history · 24H/7D/30D
  *           — Phase 7C: Token metadata · 24h volume
  *
- * Subgraph verified at:
- *   developers.uniswap.org/docs/ecosystem/subgraphs/overview
- *   Endpoint: gateway.thegraph.com
- *   Subgraph ID: 5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV (Uniswap v3 mainnet)
+ * Live prices (Phase 9B):
+ *   Active chain's Uniswap V3 Subgraph via The Graph decentralised network.
+ *   Formula: token.derivedETH × bundle.ethPriceUSD = priceUSD
+ *   Subgraph IDs verified for all 8 chains from official 0xddaa-760f7f deployer.
+ *   Endpoint: gateway.thegraph.com/api/{key}/subgraphs/id/{id}
  *
- * Schema verified at:
- *   docs.uniswap.org/api/subgraph/subgraphs-devs/schemas/tokenhourdata
- *   TokenHourData.periodStartUnix — Int!, seconds, start of hour
- *   TokenHourData.priceUSD        — BigDecimal!, price at hour end
- *   TokenDayData.date             — Int!, seconds, start of day
- *   TokenDayData.priceUSD         — BigDecimal!, price at day end
+ * Token discovery (Phase 9C):
+ *   loadTokenList(chainId) — queries top 100 tokens by TVL per chain.
+ *   Native token prepended per chain. Called on network switch and boot.
  *
- * Chainlink feed addresses verified at:
- *   docs.chain.link/data-feeds/price-feeds/addresses — Ethereum Mainnet
- *   All feeds: int256 answer, 8 decimal places → divide by 1e8.
+ * Chart history (Phase 7B):
+ *   Subgraph ID: 5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV (Uniswap v3 Ethereum mainnet)
+ *   Schema: TokenHourData.periodStartUnix, TokenHourData.priceUSD
+ *           TokenDayData.date, TokenDayData.priceUSD
  *
- * The Graph API key: free tier at thegraph.com/studio — no credit card.
- * Replace THE_GRAPH_API_KEY below after creating your key.
+ * The Graph API key stored in THE_GRAPH_API_KEY constant below.
  *
  * renderChart() — untouched. Data shape: [[timestamp_ms, price_usd], ...]
  * UNCHAINED9. Built by Waeven Xrysmond.
@@ -29,59 +27,25 @@
   'use strict';
 
   /* ─────────────────────────────────────────────────────────────────
-     PHASE 7A — CHAINLINK LIVE PRICES
+     PHASE 9B — UNISWAP V3 SUBGRAPH — LIVE PRICES
 
-     Proxy addresses — Ethereum Mainnet.
-     Verified: docs.chain.link/data-feeds/price-feeds/addresses
-     Stablecoins (DAI, USDC) are hardcoded at $1.00 — no feed needed.
+     Replaces Phase 7A (Chainlink). No Chainlink references remain.
+     Queries the active chain's subgraph for top 100 tokens by TVL.
+     Formula: token.derivedETH × bundle.ethPriceUSD = priceUSD.
+     Subgraph IDs verified for all 8 supported chains.
   ───────────────────────────────────────────────────────────────── */
-  var CHAINLINK_FEEDS = {
-    '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2': '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419', /* WETH / USD */
-    '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599': '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88b', /* BTC  / USD — WBTC tracks BTC */
-    '0x514910771AF9Ca656af840dff83E8264EcF986CA': '0x2c1d072e956AFFC0D435Cb7AC308d97936c3d09', /* LINK / USD */
-    '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984': '0x553303d460EE0afB37EdFf9bE42922D8FF63220', /* UNI  / USD */
+  var SUBGRAPH_IDS = {
+    1:     '5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV', /* Ethereum     — verified */
+    10:    'Cghf4LfVqPiFw6fp6Y5X5Ubc8UpmUhSfJL82zwiBFLaj', /* Optimism     — verified */
+    56:    'F85MNzUGYqgSHSHRGgeVMNsdnW1KtZSVgFULumXRZTw2', /* BNB Chain    — verified */
+    130:   'BCfy6Vw9No3weqVq9NhyGo4FkVCJep1ZN9RMJj5S32fX', /* Unichain     — verified */
+    137:   '3hCPRGf4z88VC5rsBKU5AA9FBBq5nF3jbKJG7VZCbhjm', /* Polygon      — verified */
+    8453:  '43Hwfi3dJSoGpyas9VwNoDAv55yjgGrPpNSmbQZArzMG', /* Base         — verified */
+    42161: 'FbCGRftH4a3yZugY7TnbYgPJVEv2LvMT6oF1fxPe9aJM', /* Arbitrum One — verified */
+    43114: 'GVH9h9KZ9CqheUEL93qMbq7QwgoBu32QXQDPR6bev4Eo', /* Avalanche    — verified */
   };
-
-  var STABLE_ADDRESSES = {
-    '0x6B175474E89094C44Da98b954EedeAC495271d0F': true, /* DAI  */
-    '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48': true, /* USDC */
-  };
-
-  /* Minimal ABI — latestRoundData only */
-  var CHAINLINK_ABI = [
-    'function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)'
-  ];
 
   var _pollInterval = null; /* setInterval handle */
-
-  /*
-   * getChainlinkProvider()
-   * Uses privyProvider (EIP-1193) when wallet is connected, falls back
-   * to a public RPC for anonymous reads. Matches swap.js::getReadProvider().
-   */
-  function getChainlinkProvider() {
-    /* Always use a dedicated mainnet JSON-RPC for Chainlink.
-     * Chainlink feeds live on Ethereum mainnet only.
-     * Using the wallet's provider would query the wrong network
-     * if the user is connected to Arbitrum, Base, Optimism, etc.
-     */
-    return new ethers.providers.JsonRpcProvider('https://eth.llamarpc.com');
-  }
-
-  /*
-   * fetchChainlinkPrice(feedAddress, provider)
-   * Calls latestRoundData() on the Chainlink proxy contract.
-   * result[1] = answer (int256, 8 decimals). result[3] = updatedAt (unix seconds).
-   * Returns { usd: Number, updatedAt: Number }.
-   */
-  async function fetchChainlinkPrice(feedAddress, provider) {
-    var feed   = new ethers.Contract(feedAddress, CHAINLINK_ABI, provider);
-    var result = await feed.latestRoundData();
-    return {
-      usd:       Number(result[1]) / 1e8,
-      updatedAt: Number(result[3]),
-    };
-  }
 
   /*
    * 24h snapshot system — localStorage
@@ -134,47 +98,70 @@
 
   /*
    * updateAllPrices()
-   * Fetches all Chainlink feeds in parallel using a dedicated mainnet RPC.
-   * Stablecoins resolved to $1.00. Runs regardless of user's connected network.
-   * Writes merged result to STATE.prices via setState().
+   * Queries the active chain's Uniswap V3 Subgraph for top 100 tokens by TVL.
+   * Formula: token.derivedETH × bundle.ethPriceUSD = priceUSD.
+   * Stablecoins with near-zero derivedETH are anchored to $1.00 (correct peg).
+   * On failure: logs error, preserves last known STATE.prices — never clears it.
    */
   async function updateAllPrices() {
-    var chainId  = window.STATE && STATE.network;
-    var provider = getChainlinkProvider();
-    var updates  = {};
+    var chainId    = (window.STATE && STATE.network) || 1;
+    var subgraphId = SUBGRAPH_IDS[chainId] || SUBGRAPH_IDS[1];
+    var endpoint   = 'https://gateway.thegraph.com/api/' + THE_GRAPH_API_KEY + '/subgraphs/id/' + subgraphId;
 
-    /* Stablecoins — fixed, always */
-    for (var stableAddr in STABLE_ADDRESSES) {
-      updates[stableAddr] = { usd: 1.00, change24h: 0.00 };
-    }
+    var query = `{
+      bundle(id: "1") { ethPriceUSD }
+      tokens(
+        first: 100
+        orderBy: totalValueLockedUSD
+        orderDirection: desc
+        where: { totalValueLockedUSD_gt: "50000" }
+      ) {
+        id
+        derivedETH
+      }
+    }`;
 
-    /* Chainlink feeds — always fetch from mainnet regardless of user's connected network.
-     * Prices are denominated in USD on mainnet; the user's chain doesn't matter here.
-     */
-    var fetches = Object.keys(CHAINLINK_FEEDS).map(function (tokenAddr) {
-        var feedAddr = CHAINLINK_FEEDS[tokenAddr];
-        return fetchChainlinkPrice(feedAddr, provider)
-          .then(function (result) {
-            var change24h = get24hChange(tokenAddr, result.usd);
-            savePriceSnapshot(tokenAddr, result.usd);
-            updates[tokenAddr] = {
-              usd:       result.usd,
-              change24h: change24h,
-              updatedAt: result.updatedAt,
-            };
-          })
-          .catch(function () {
-            /* Feed unavailable — preserve last known price, flag stale */
-            var last = window.STATE && STATE.prices && STATE.prices[tokenAddr];
-            if (last) updates[tokenAddr] = Object.assign({}, last, { stale: true });
-          });
+    try {
+      var res = await fetch(endpoint, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ query: query }),
       });
 
-    await Promise.all(fetches);
+      if (!res.ok) throw new Error('Subgraph HTTP ' + res.status);
 
-    if (!Object.keys(updates).length) return;
-    var merged = Object.assign({}, (window.STATE && STATE.prices) || {}, updates);
-    setState({ prices: merged });
+      var json = await res.json();
+      if (!json.data) throw new Error('Subgraph returned no data');
+
+      var ethPrice = parseFloat(json.data.bundle.ethPriceUSD);
+      var updates  = {};
+
+      json.data.tokens.forEach(function (token) {
+        var addr    = ethers.utils.getAddress(token.id); /* normalise to checksum */
+        var derived = parseFloat(token.derivedETH);
+        var usd     = derived * ethPrice;
+
+        /* Stablecoins: derivedETH is near-zero — anchor to correct peg ($1.00) */
+        if (derived < 0.001 && usd < 2) usd = 1.00;
+
+        var change24h = get24hChange(addr, usd);
+        savePriceSnapshot(addr, usd);
+
+        updates[addr] = {
+          usd:       usd,
+          change24h: change24h,
+          updatedAt: Math.floor(Date.now() / 1000),
+        };
+      });
+
+      var merged = Object.assign({}, (window.STATE && STATE.prices) || {}, updates);
+      setState({ prices: merged });
+
+    } catch (err) {
+      /* Preserve last known prices — never clear STATE.prices on failure.
+       * Portfolio layer detects staleness via updatedAt on next balance refresh. */
+      console.error('[prices.js] updateAllPrices failed:', err.message);
+    }
   }
 
   /*
@@ -186,6 +173,95 @@
     if (_pollInterval) clearInterval(_pollInterval);
     updateAllPrices();
     _pollInterval = setInterval(updateAllPrices, 15000);
+  }
+
+  /* ─────────────────────────────────────────────────────────────────
+     PHASE 9C — MULTI-CHAIN TOKEN DISCOVERY
+
+     Queries the active chain's Uniswap V3 Subgraph for the top 100
+     tokens by TVL. Native token prepended per chain definition.
+     Called on network switch, wallet connect, and boot.
+
+     On failure: logs error. STATE.tokenList keeps its previous value.
+     Portfolio and swap show whatever was last loaded — never blank.
+  ───────────────────────────────────────────────────────────────── */
+
+  /*
+   * NATIVE_TOKENS
+   * Leading token for each supported chain — prepended to the discovered list.
+   * address: 'NATIVE' — sentinel used by portfolio.js and transfer.js to
+   * distinguish ETH/BNB/AVAX sends from ERC-20 transfers.
+   */
+  var NATIVE_TOKENS = {
+    1:      { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    10:     { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    56:     { address: 'NATIVE', symbol: 'BNB',  name: 'BNB',       decimals: 18 },
+    130:    { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    137:    { address: 'NATIVE', symbol: 'POL',  name: 'Polygon',   decimals: 18 },
+    8453:   { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    42161:  { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    43114:  { address: 'NATIVE', symbol: 'AVAX', name: 'Avalanche', decimals: 18 },
+  };
+
+  /*
+   * loadTokenList(chainId)
+   * Fetches top 100 tokens by TVL from the chain's Uniswap V3 Subgraph.
+   * Prepends the native token for the chain.
+   * Writes result to STATE.tokenList via setState — triggers state:tokenList.
+   *
+   * On unsupported chainId: returns immediately (no-op).
+   * On fetch/parse failure: logs error, STATE.tokenList unchanged.
+   */
+  async function loadTokenList(chainId) {
+    var subgraphId = SUBGRAPH_IDS[chainId];
+    if (!subgraphId) return; /* unsupported chain — fail silently */
+
+    var endpoint = 'https://gateway.thegraph.com/api/' + THE_GRAPH_API_KEY + '/subgraphs/id/' + subgraphId;
+
+    var query = `{
+      tokens(
+        first: 100
+        orderBy: totalValueLockedUSD
+        orderDirection: desc
+        where: { totalValueLockedUSD_gt: "50000" }
+      ) {
+        id symbol name decimals
+      }
+    }`;
+
+    try {
+      var res = await fetch(endpoint, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ query: query }),
+      });
+
+      if (!res.ok) throw new Error('Token discovery HTTP ' + res.status);
+
+      var json = await res.json();
+      if (!json.data || !json.data.tokens) throw new Error('No token data in response');
+
+      var native     = NATIVE_TOKENS[chainId];
+      var discovered = json.data.tokens.map(function (t) {
+        return {
+          address:  ethers.utils.getAddress(t.id), /* normalise to checksum */
+          symbol:   t.symbol,
+          name:     t.name,
+          decimals: parseInt(t.decimals, 10),
+        };
+      });
+
+      /* Native token always leads the list — portfolio.js and transfer.js
+       * use address === 'NATIVE' to distinguish ETH/native sends */
+      var tokenList = native ? [native].concat(discovered) : discovered;
+      setState({ tokenList: tokenList });
+
+    } catch (err) {
+      /* STATE.tokenList keeps its previous value.
+       * If tokenList is empty and wallet is connected,
+       * portfolio.js renders the error state on next mount. */
+      console.error('[prices.js] loadTokenList failed (chain ' + chainId + '):', err.message);
+    }
   }
 
   /* ─────────────────────────────────────────────────────────────────
@@ -203,6 +279,7 @@
      address.toLowerCase() applied before every query.
   ───────────────────────────────────────────────────────────────── */
   var THE_GRAPH_API_KEY   = 'ba6a6c595dff86ed9d73903bcca93b22';
+
   var UNISWAP_V3_SUBGRAPH = 'https://gateway.thegraph.com/api/' +
                             THE_GRAPH_API_KEY +
                             '/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV';
@@ -724,11 +801,32 @@
     if (STATE.mobileView === 'token') remountIfSkeleton(mobileTokenView);
   });
 
-  /* Restart polling on wallet connect/disconnect or network switch */
-  document.addEventListener('state:wallet',  function () { startPricePolling(); });
-  document.addEventListener('state:network', function () { startPricePolling(); });
+  /*
+   * Restart price polling and re-discover tokens on wallet connect or network switch.
+   *
+   * state:wallet — wallet address in e.detail. Network already set by wallet.js
+   *   at the point this fires. Use STATE.network as the authoritative chain.
+   *
+   * state:network — new chainId in e.detail (direct from setState CustomEvent).
+   *   Prefer e.detail; fall back to STATE.network for safety.
+   */
+  document.addEventListener('state:wallet', function () {
+    startPricePolling();
+    loadTokenList((window.STATE && STATE.network) || 1);
+  });
 
-  /* Boot — fetch live prices immediately on file load */
+  document.addEventListener('state:network', function (e) {
+    startPricePolling();
+    loadTokenList(e.detail || (window.STATE && STATE.network) || 1);
+  });
+
+  /* ─────────────────────────────────────────────────────────────────
+     BOOT
+     Fetch live prices and discover tokens immediately on file load.
+     Default to Ethereum (chainId 1) until wallet connects and sets
+     STATE.network — loadTokenList is a no-op for unsupported chainIds.
+  ───────────────────────────────────────────────────────────────── */
   startPricePolling();
+  loadTokenList((window.STATE && STATE.network) || 1);
 
 }());
