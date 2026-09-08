@@ -1186,6 +1186,48 @@
       gap: var(--sp-2);
     }
 
+    /* ── Network bar — appears above swap card, shows active chain ── */
+    .swap-network-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 440px;
+      width: 100%;
+      padding: 6px var(--sp-2);
+      margin-bottom: var(--sp-1);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 120ms;
+      user-select: none;
+    }
+    .swap-network-bar:hover {
+      background: rgba(156,61,187,.08);
+    }
+    .swap-network-bar:active {
+      background: rgba(156,61,187,.14);
+    }
+    .swap-network-bar-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--up);
+      flex-shrink: 0;
+      box-shadow: 0 0 5px var(--up);
+    }
+    .swap-network-bar-name {
+      font-family: var(--fm);
+      font-size: .58rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--em-2);
+      flex: 1;
+    }
+    .swap-network-bar-chevron {
+      color: var(--dim);
+      opacity: .6;
+      flex-shrink: 0;
+    }
+
     /* ── SIDE LABEL — eyebrow above each slot ── */
     .swap-side-label {
       display: block;

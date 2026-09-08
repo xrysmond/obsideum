@@ -45,6 +45,22 @@
     43114:  'avalanche',
   };
 
+  /* Chain-specific native token metadata.
+   * Used in fetchAllBalances so BNB chain shows 'BNB / BNB Chain'
+   * not 'Ethereum / BNB Chain' (which was the bug: STATE.tokenList
+   * is loaded for the ACTIVE chain only, carrying the wrong NATIVE
+   * token metadata for every other chain in the loop). */
+  var CHAIN_NATIVE_TOKENS = {
+    1:      { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    10:     { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    56:     { address: 'NATIVE', symbol: 'BNB',  name: 'BNB',       decimals: 18 },
+    130:    { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    137:    { address: 'NATIVE', symbol: 'POL',  name: 'Polygon',   decimals: 18 },
+    8453:   { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    42161:  { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    43114:  { address: 'NATIVE', symbol: 'AVAX', name: 'Avalanche', decimals: 18 },
+  };
+
   var ERC20_BALANCE_ABI = ['function balanceOf(address) view returns (uint256)'];
 
   var FETCH_TIMEOUT_MS = 8000;   /* per individual call */
@@ -213,40 +229,73 @@
 
   function fetchAllBalances(walletAddress) {
     var activeNetworks = (window.STATE && STATE.settings && STATE.settings.activeNetworks) || [];
-    var tokenList      = (window.STATE && STATE.tokenList) || [];
-    var allResults     = {};
+    var activeChainId  = (window.STATE && STATE.network) || 1;
+
+    /* ERC-20 tokens from the active chain's tokenList only.
+     * STATE.tokenList is loaded for the active chain — using it for OTHER chains
+     * would check Ethereum ERC-20 addresses against BNB Chain balances (always 0)
+     * while writing wrong token metadata for the native token. */
+    var erc20Tokens = ((window.STATE && STATE.tokenList) || [])
+      .filter(function (t) { return t.address !== 'NATIVE'; });
+
+    var allResults = {};
 
     var chainPromises = activeNetworks.map(function (chainId) {
       var chainBalances = {};
+      var prices        = window.STATE && STATE.prices;
+      var nativeDef     = CHAIN_NATIVE_TOKENS[chainId];
 
-      var tokenPromises = tokenList.map(function (token) {
-        var fetch = token.address === 'NATIVE'
-          ? fetchNativeBalance(walletAddress, chainId)
-          : fetchTokenBalance(walletAddress, token.address, token.decimals, chainId);
+      /* ── Native balance — every active chain ── */
+      var nativeFetch = nativeDef
+        ? fetchNativeBalance(walletAddress, chainId).then(function (result) {
+            var num = parseFloat(result.balance);
+            if (isNaN(num) || num <= 0) return;
 
-        return fetch.then(function (result) {
-          var num = parseFloat(result.balance);
-          if (isNaN(num) || num <= 0) return; /* skip zero balances */
+            /* Use NATIVE_<chainId> price key written by prices.js updateAllPrices().
+             * Fall back to 'NATIVE' for backwards compat with any cached data. */
+            var priceKey   = 'NATIVE_' + chainId;
+            var priceEntry = prices && (prices[priceKey] || prices['NATIVE']);
+            var usd        = priceEntry ? num * priceEntry.usd : 0;
 
-          var prices     = window.STATE && STATE.prices;
-          var priceEntry = prices && prices[token.address];
-          var usd        = priceEntry ? num * priceEntry.usd : 0;
+            chainBalances['NATIVE'] = {
+              balance:  result.balance,
+              usd:      usd,
+              symbol:   nativeDef.symbol,   /* BNB on BNB Chain, ETH on Arbitrum, etc. */
+              name:     nativeDef.name,
+              decimals: nativeDef.decimals,
+              chainId:  chainId,
+            };
+          }).catch(function (e) {
+            console.warn('[portfolio] native skip chain', chainId + ':', e.message);
+          })
+        : Promise.resolve();
 
-          chainBalances[token.address] = {
-            balance:  result.balance,
-            usd:      usd,
-            symbol:   token.symbol,
-            name:     token.name,
-            decimals: token.decimals || 18,
-            chainId:  chainId,
-          };
-        }).catch(function (e) {
-          /* Individual token failure: skip silently, don't fail the chain */
-          console.warn('[portfolio] skip', token.symbol, 'chain', chainId + ':', e.message);
-        });
-      });
+      /* ── ERC-20 balances — active chain only ── */
+      var erc20Promises = (chainId === activeChainId)
+        ? erc20Tokens.map(function (token) {
+            return fetchTokenBalance(walletAddress, token.address, token.decimals, chainId)
+              .then(function (result) {
+                var num = parseFloat(result.balance);
+                if (isNaN(num) || num <= 0) return;
 
-      return Promise.all(tokenPromises).then(function () {
+                var priceEntry = prices && prices[token.address];
+                var usd        = priceEntry ? num * priceEntry.usd : 0;
+
+                chainBalances[token.address] = {
+                  balance:  result.balance,
+                  usd:      usd,
+                  symbol:   token.symbol,
+                  name:     token.name,
+                  decimals: token.decimals || 18,
+                  chainId:  chainId,
+                };
+              }).catch(function (e) {
+                console.warn('[portfolio] skip', token.symbol, 'chain', chainId + ':', e.message);
+              });
+          })
+        : [];
+
+      return Promise.all([nativeFetch].concat(erc20Promises)).then(function () {
         savePortfolioCache(chainId, chainBalances);
         allResults[chainId] = chainBalances;
       }).catch(function (e) {
@@ -675,7 +724,9 @@
     document.querySelectorAll('.asset-row.held[data-address]').forEach(function (row) {
       var address    = row.dataset.address;
       var chainId    = Number(row.dataset.chainId);
-      var priceEntry = prices[address];
+      /* Native token price is stored per-chain as 'NATIVE_<chainId>' */
+      var priceKey   = address === 'NATIVE' ? ('NATIVE_' + chainId) : address;
+      var priceEntry = prices[priceKey];
       if (!priceEntry) return;
 
       var chainData = balances && balances[chainId];
@@ -715,7 +766,9 @@
       Object.keys(chainData).forEach(function (address) {
         var entry      = chainData[address];
         if (!entry || parseFloat(entry.balance) <= 0) return;
-        var priceEntry = prices[address];
+        var cid        = Number(chainId);
+        var priceKey   = address === 'NATIVE' ? ('NATIVE_' + cid) : address;
+        var priceEntry = prices[priceKey];
         var usd        = priceEntry
           ? parseFloat(entry.balance) * priceEntry.usd
           : (entry.usd || 0);

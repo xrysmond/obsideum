@@ -29,6 +29,18 @@
   var WETH_ADDR = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
   var USDC_ADDR = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
 
+  /* Human-readable chain names for the network bar in the swap card */
+  var CHAIN_NAMES = {
+    1:      'Ethereum',
+    10:     'Optimism',
+    56:     'BNB Chain',
+    130:    'Unichain',
+    137:    'Polygon',
+    8453:   'Base',
+    42161:  'Arbitrum One',
+    43114:  'Avalanche',
+  };
+
   /* ════════════════════════════════════════════════════════
      ABIs
      ERC-20 retained only for balance reads if needed in future.
@@ -598,6 +610,9 @@
     var fpStr = fp ? fmtPrice(fp.usd) : null;
     var tpStr = tp ? fmtPrice(tp.usd) : null;
 
+    var chainId     = (window.STATE && STATE.network) || 1;
+    var networkName = CHAIN_NAMES[chainId] || ('Chain ' + chainId);
+
     var chevron =
       '<svg class="swap-chevron" width="8" height="5" viewBox="0 0 8 5" fill="none">' +
       '<path class="swap-chevron-path" d="M1 1l3 3 3-3"' +
@@ -614,6 +629,17 @@
     }
 
     return (
+      /* Network bar — shows active chain + tap to switch (navigates to Accounts tab) */
+      '<div class="swap-network-bar" id="swap-network-bar" role="button" tabindex="0"' +
+        ' aria-label="Switch network">' +
+        '<span class="swap-network-bar-dot"></span>' +
+        '<span class="swap-network-bar-name">' + networkName + '</span>' +
+        '<svg class="swap-network-bar-chevron" width="6" height="4" viewBox="0 0 8 5" fill="none">' +
+          '<path d="M1 1l3 3 3-3" stroke="currentColor" stroke-width="1.5"' +
+          ' stroke-linecap="round" stroke-linejoin="round"/>' +
+        '</svg>' +
+      '</div>' +
+
       '<div class="swap-card glass-p" id="swap-card">' +
 
         '<div>' +
@@ -730,6 +756,23 @@
       logoFallback(img, img && img.nextElementSibling,
         (container.querySelector('#' + side + '-symbol') || {}).textContent || '?');
     });
+
+    /* ── Network bar — tap to go to Accounts tab (network toggles live there) ── */
+    var networkBar = container.querySelector('#swap-network-bar');
+    if (networkBar) {
+      function openNetworkSwitcher() {
+        /* On mobile: switch to accounts tab. On desktop: open wallet sheet. */
+        if (window.innerWidth < 768) {
+          setState({ mobileTab: 'accounts', mobileView: 'accounts' });
+        } else {
+          if (typeof openWalletSheet === 'function') openWalletSheet();
+        }
+      }
+      networkBar.addEventListener('click', openNetworkSwitcher);
+      networkBar.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openNetworkSwitcher(); }
+      });
+    }
 
     /* ── Cancel any in-flight Dutch Auction poll ── */
     function cancelPoll() {
@@ -1165,34 +1208,95 @@
   }
 
   /* ════════════════════════════════════════════════════════
-     MOUNT SWAP CARD — unchanged
+     MOUNT SWAP CARD
+
+     Critical fixes vs Phase 9G:
+     1. No rebuild on view switch — check for .swap-view and return early.
+        Preserves quote state, selected tokens, typed amount across tabs.
+     2. Chain-aware defaults — S.fromAddress / S.toAddress must be valid
+        tokens for the ACTIVE chain's tokenList. The old Ethereum mainnet
+        hardcodes (WETH_ADDR / USDC_ADDR) fail on Arbitrum / BNB / etc.
+        because those addresses aren't in the chain's tokenList.
+        Addresses are updated here AND in S.* so updateOutput uses them.
+     3. Null guard — if tokenList isn't loaded yet, show skeleton and
+        wait for state:tokenList rather than calling buildSwapHTML(null, null)
+        which crashes immediately.
   ════════════════════════════════════════════════════════ */
   function mountSwapCard(container) {
     if (!container) return;
 
+    /* ── Guard: already mounted — don't rebuild on every tab switch ──
+     * Only network changes force a remount (handled by state:network listener below). */
+    if (container.querySelector('.swap-view')) return;
+
+    var tList = tokenList();
+
+    /* ── Chain-aware default addresses ──
+     * S.fromAddress and S.toAddress may hold addresses that don't exist
+     * on the active chain (e.g. Ethereum WETH on Arbitrum). Validate
+     * and reset to actual tokens from the current chain's tokenList. */
+    if (!getToken(S.fromAddress)) {
+      /* Prefer the chain's native token (NATIVE) if available, else first in list */
+      var nativeToken = tList.find(function (t) { return t.address === 'NATIVE'; });
+      var firstToken  = tList[0];
+      S.fromAddress   = nativeToken ? 'NATIVE' : (firstToken ? firstToken.address : S.fromAddress);
+    }
+    if (!getToken(S.toAddress) || S.toAddress === S.fromAddress) {
+      var altToken = tList.find(function (t) { return t.address !== S.fromAddress; });
+      if (altToken) S.toAddress = altToken.address;
+    }
+
+    /* ── Carry preToken from token panel → into FROM slot ── */
     var preToken = window.STATE && STATE.token;
-    if (preToken && preToken !== S.toAddress) {
-      S.fromAddress = preToken;
-    } else if (preToken && preToken === S.toAddress) {
-      S.fromAddress = S.toAddress;
-      S.toAddress   = (preToken === USDC_ADDR) ? WETH_ADDR : USDC_ADDR;
-    }
-    if (S.fromAddress === S.toAddress) {
-      S.toAddress = (S.fromAddress === USDC_ADDR) ? WETH_ADDR : USDC_ADDR;
+    if (preToken && getToken(preToken)) {
+      if (preToken !== S.toAddress) {
+        S.fromAddress = preToken;
+      } else {
+        /* preToken is already TO — swap slots */
+        var tmp       = S.fromAddress;
+        S.fromAddress = S.toAddress;
+        S.toAddress   = tmp;
+      }
+      /* Final collision guard */
+      if (S.fromAddress === S.toAddress) {
+        var alt2 = tList.find(function (t) { return t.address !== S.fromAddress; });
+        if (alt2) S.toAddress = alt2.address;
+      }
     }
 
-    var fromToken = getToken(S.fromAddress) || tokenList()[0];
-    var toToken   = getToken(S.toAddress)   || tokenList()[5] || tokenList()[1];
+    var fromToken = getToken(S.fromAddress);
+    var toToken   = getToken(S.toAddress);
 
-    container.innerHTML =
-      '<div class="swap-view">' +
-        '<div class="swap-skeleton">' +
-          '<div class="skeleton swap-skel-slot"></div>' +
-          '<div class="swap-skel-dir"></div>' +
-          '<div class="skeleton swap-skel-slot"></div>' +
-          '<div class="skeleton swap-skel-btn"></div>' +
-        '</div>' +
-      '</div>';
+    var SKELETON_HTML = [
+      '<div class="swap-view">',
+        '<div class="swap-skeleton">',
+          '<div class="skeleton swap-skel-slot"></div>',
+          '<div class="swap-skel-dir"></div>',
+          '<div class="skeleton swap-skel-slot"></div>',
+          '<div class="skeleton swap-skel-btn"></div>',
+        '</div>',
+      '</div>',
+    ].join('');
+
+    /* ── Token list not yet loaded — wait for it ── */
+    if (!fromToken || !toToken) {
+      container.innerHTML = SKELETON_HTML;
+
+      function _onList() {
+        document.removeEventListener('state:tokenList', _onList);
+        /* Clear so guard at top allows re-entry */
+        container.innerHTML = '';
+        /* Only remount if the container is still visible */
+        if (container.offsetParent !== null || !container.hidden) {
+          mountSwapCard(container);
+        }
+      }
+      document.addEventListener('state:tokenList', _onList);
+      return;
+    }
+
+    /* ── Full build — skeleton → real card after paint ── */
+    container.innerHTML = SKELETON_HTML;
 
     setTimeout(function () {
       container.innerHTML = '<div class="swap-view">' + buildSwapHTML(fromToken, toToken) + '</div>';
@@ -1371,7 +1475,7 @@
   }
 
   /* ════════════════════════════════════════════════════════
-     STATE EVENT LISTENERS — unchanged
+     STATE EVENT LISTENERS
   ════════════════════════════════════════════════════════ */
   document.addEventListener('panel:render', function (e) {
     var container = document.getElementById('right-panel-content');
@@ -1387,6 +1491,25 @@
     if (e.detail !== 'swap') return;
     var container = document.getElementById('mobile-swap');
     if (container) mountSwapCard(container);
+  });
+
+  /* Network changed — reset S.* so the new chain gets proper token defaults,
+   * then force a remount of any currently-visible swap card. */
+  document.addEventListener('state:network', function () {
+    S.fromAddress  = WETH_ADDR;   /* mountSwapCard's chain-aware logic will override */
+    S.toAddress    = USDC_ADDR;
+    S.pickerTarget = null;
+
+    [
+      document.getElementById('right-panel-content'),
+      document.getElementById('mobile-swap'),
+    ].forEach(function (c) {
+      if (!c || !c.querySelector('.swap-view')) return;
+      c.innerHTML = ''; /* Clear so mountSwapCard guard allows re-entry */
+      var isMobileSwap  = c.id === 'mobile-swap'         && window.STATE && STATE.mobileTab  === 'swap';
+      var isDesktopSwap = c.id === 'right-panel-content' && window.STATE && STATE.rightPanel === 'swap';
+      if (isMobileSwap || isDesktopSwap) mountSwapCard(c);
+    });
   });
 
   document.addEventListener('state:prices', function () {

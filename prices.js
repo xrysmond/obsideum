@@ -97,14 +97,16 @@
   }
 
   /*
-   * updateAllPrices()
-   * Queries the active chain's Uniswap V3 Subgraph for top 100 tokens by TVL.
+   * updateAllPrices(chainId)
+   * Queries the specified chain's Uniswap V3 Subgraph for top 100 tokens by TVL.
+   * Also stores the bundle's ethPriceUSD as 'NATIVE_<chainId>' — the chain's
+   * native token price (ETH on Ethereum/Arbitrum/etc, BNB on BNB Chain, AVAX on Avalanche).
    * Formula: token.derivedETH × bundle.ethPriceUSD = priceUSD.
    * Stablecoins with near-zero derivedETH are anchored to $1.00 (correct peg).
    * On failure: logs error, preserves last known STATE.prices — never clears it.
    */
-  async function updateAllPrices() {
-    var chainId    = (window.STATE && STATE.network) || 1;
+  async function updateAllPrices(chainId) {
+    chainId        = Number(chainId) || (window.STATE && STATE.network) || 1;
     var subgraphId = SUBGRAPH_IDS[chainId] || SUBGRAPH_IDS[1];
     var endpoint   = 'https://gateway.thegraph.com/api/' + THE_GRAPH_API_KEY + '/subgraphs/id/' + subgraphId;
 
@@ -136,6 +138,20 @@
       var ethPrice = parseFloat(json.data.bundle.ethPriceUSD);
       var updates  = {};
 
+      /* Store native token price per chain.
+       * Key: 'NATIVE_<chainId>' — portfolio.js reads this for native balance USD.
+       * On ETH mainnet: ethPrice = ETH price. On BNB Chain: ethPrice = BNB price.
+       * On Arbitrum: ethPrice = ETH price. Subgraph bundle always reflects the chain's
+       * native asset pricing basis, making this key correct for every chain. */
+      var nativeKey     = 'NATIVE_' + chainId;
+      var nativeChange  = get24hChange(nativeKey, ethPrice);
+      savePriceSnapshot(nativeKey, ethPrice);
+      updates[nativeKey] = {
+        usd:       ethPrice,
+        change24h: nativeChange,
+        updatedAt: Math.floor(Date.now() / 1000),
+      };
+
       json.data.tokens.forEach(function (token) {
         var addr    = ethers.utils.getAddress(token.id); /* normalise to checksum */
         var derived = parseFloat(token.derivedETH);
@@ -165,14 +181,32 @@
   }
 
   /*
+   * updateAllChainPrices()
+   * Fires updateAllPrices() for every active chain simultaneously.
+   * This ensures NATIVE_<chainId> prices exist for all chains the user holds assets on.
+   * Without this, native balances on non-active chains compute as $0 USD.
+   */
+  async function updateAllChainPrices() {
+    var activeNetworks = (window.STATE && STATE.settings && STATE.settings.activeNetworks) || [1];
+    await Promise.all(
+      activeNetworks.map(function (cid) {
+        return updateAllPrices(cid).catch(function (err) {
+          console.warn('[prices.js] Chain', cid, 'price update failed:', err.message);
+        });
+      })
+    );
+  }
+
+  /*
    * startPricePolling()
-   * Clears any existing interval, fetches immediately, polls every 15s.
+   * Clears any existing interval, fetches immediately across ALL active chains,
+   * polls every 15s.
    * Called at file load and whenever wallet or network state changes.
    */
   function startPricePolling() {
     if (_pollInterval) clearInterval(_pollInterval);
-    updateAllPrices();
-    _pollInterval = setInterval(updateAllPrices, 15000);
+    updateAllChainPrices();
+    _pollInterval = setInterval(updateAllChainPrices, 15000);
   }
 
   /* ─────────────────────────────────────────────────────────────────
@@ -816,7 +850,7 @@
   });
 
   document.addEventListener('state:network', function (e) {
-    startPricePolling();
+    startPricePolling(); /* Already polls all active chains — no extra call needed */
     loadTokenList(e.detail || (window.STATE && STATE.network) || 1);
   });
 
