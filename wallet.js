@@ -5,6 +5,8 @@
              form, recent trades, network switch, copy address.
    Phase 6B: ENS + ENSv2 registration (stubs here).
    Phase 9G: Accounts tab — mobile + desktop.
+   Phase 10A: Multi-wallet — STATE.activeWallet persisted +
+              restored. Clamped to live wallets array on init.
 
    Architecture: micro-island React pattern.
    Invisible React root wraps PrivyProvider, bridges auth state
@@ -734,10 +736,14 @@ function _buildPrivyBridge(useEffect, usePrivy, useWallets) {
       }
     }, [ready, authenticated]);
 
-    /* Expose full wallets array — STATE.wallets drives accounts tab + _setActiveWallet */
+    /* Expose full wallets array. Clamp restored activeWallet index to actual range.
+     * loadSettings() may have restored an index that is now OOB (wallet removed between
+     * sessions). Clamp here — wallets.length is authoritative. */
     useEffect(function () {
       if (ready && wallets) {
-        setState({ wallets: wallets });
+        var savedIdx = (window.STATE && STATE.activeWallet) || 0;
+        var validIdx = (savedIdx >= 0 && savedIdx < wallets.length) ? savedIdx : 0;
+        setState({ wallets: wallets, activeWallet: validIdx });
       }
     }, [ready, wallets]);
 
@@ -1048,6 +1054,9 @@ function _setActiveWallet(index) {
   if (!wallets || !wallets[index]) return;
 
   setState({ activeWallet: index });
+
+  /* Persist so the active wallet survives a page reload */
+  try { localStorage.setItem('obsideum:activeWallet', String(index)); } catch (_) {}
 
   var wallet    = wallets[index];
   var _provider = null;

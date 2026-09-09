@@ -121,6 +121,8 @@ function updateSetting(key, value) {
    loadSettings()
    Restores settings from localStorage.
    Deep-merges over defaults so missing keys stay default.
+   Also restores activeWallet index — clamping to valid range
+   happens in _buildPrivyBridge once the wallets array is live.
    Corrupt or absent storage: defaults used silently.
 ═══════════════════════════════════════ */
 
@@ -129,6 +131,13 @@ function loadSettings() {
     const saved = localStorage.getItem('obsideum:settings');
     if (saved) Object.assign(STATE.settings, JSON.parse(saved));
   } catch (_) { /* corrupt storage — defaults stand */ }
+  try {
+    const savedIdx = localStorage.getItem('obsideum:activeWallet');
+    if (savedIdx !== null) {
+      const idx = Number(savedIdx);
+      if (!isNaN(idx) && idx >= 0) STATE.activeWallet = idx;
+    }
+  } catch (_) { /* corrupt storage — default 0 stands */ }
 }
 
 /* ═══════════════════════════════════════
