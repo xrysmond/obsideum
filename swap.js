@@ -36,6 +36,18 @@
     43114:  '0xbe0F5544EC67e9B3b2D979aaA43f18Fd87E6257F',
   };
 
+  /* View-only quoter — pure view function, NO revert pattern, works on any public RPC.
+     Primary quote path for supported chains. Falls back to QuoterV2 for others.
+     Interface identical to QuoterV1: positional args, returns amountOut only.
+     Source: github.com/Uniswap/view-quoter-v3 */
+  var VIEW_QUOTER = {
+    1:     '0x5e55c9e631fae526cd4b0526c4818d6e0a9ef0e3',
+    10:    '0x5e55c9e631fae526cd4b0526c4818d6e0a9ef0e3',
+    56:    '0x5e55c9e631fae526cd4b0526c4818d6e0a9ef0e3',
+    137:   '0x5e55c9e631fae526cd4b0526c4818d6e0a9ef0e3',
+    8453:  '0x222ca98f00ed15b1fae10b61c277703a194cf5d2',
+  };
+
   /* Uniswap V3 SwapRouter02 — executes exactInput[Single] */
   var SWAP_ROUTER_02 = {
     1:      '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
@@ -180,12 +192,79 @@
   };
 
   /* ═══════════════════════════════════════════════════════════
-     MINIMAL ABIs — only the selectors we actually call
+     ABIs — JSON format (more reliable than human-readable for tuple types)
   ═══════════════════════════════════════════════════════════ */
 
+  /* View-only quoter — QuoterV1-style positional args, pure view function.
+     quoteExactInputSingle(tokenIn, tokenOut, fee, amountIn, sqrtPriceLimitX96)
+     returns (uint256 amountOut)
+     Note: fee is 3rd param (before amountIn) — different from QuoterV2 struct */
+  var VIEW_QUOTER_ABI = [
+    {
+      inputs: [
+        { name: 'tokenIn',           type: 'address' },
+        { name: 'tokenOut',          type: 'address' },
+        { name: 'fee',               type: 'uint24'  },
+        { name: 'amountIn',          type: 'uint256' },
+        { name: 'sqrtPriceLimitX96', type: 'uint160' },
+      ],
+      name: 'quoteExactInputSingle',
+      outputs: [{ name: 'amountOut', type: 'uint256' }],
+      stateMutability: 'view',
+      type: 'function',
+    },
+    {
+      inputs: [
+        { name: 'path',     type: 'bytes'   },
+        { name: 'amountIn', type: 'uint256' },
+      ],
+      name: 'quoteExactInput',
+      outputs: [{ name: 'amountOut', type: 'uint256' }],
+      stateMutability: 'view',
+      type: 'function',
+    },
+  ];
+
+  /* QuoterV2 — struct param, state-changing (revert-based), 4 return values.
+     Used as fallback when view-quoter isn't deployed on the chain. */
   var QUOTER_V2_ABI = [
-    'function quoteExactInputSingle(tuple(address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut,uint160 sqrtPriceX96After,uint32 initializedTicksCrossed,uint256 gasEstimate)',
-    'function quoteExactInput(bytes path,uint256 amountIn) returns (uint256 amountOut,uint160[] sqrtPriceX96AfterList,uint32[] initializedTicksCrossedList,uint256 gasEstimate)',
+    {
+      inputs: [{
+        components: [
+          { name: 'tokenIn',           type: 'address' },
+          { name: 'tokenOut',          type: 'address' },
+          { name: 'amountIn',          type: 'uint256' },
+          { name: 'fee',               type: 'uint24'  },
+          { name: 'sqrtPriceLimitX96', type: 'uint160' },
+        ],
+        name: 'params',
+        type: 'tuple',
+      }],
+      name: 'quoteExactInputSingle',
+      outputs: [
+        { name: 'amountOut',               type: 'uint256' },
+        { name: 'sqrtPriceX96After',       type: 'uint160' },
+        { name: 'initializedTicksCrossed', type: 'uint32'  },
+        { name: 'gasEstimate',             type: 'uint256' },
+      ],
+      stateMutability: 'nonpayable',
+      type: 'function',
+    },
+    {
+      inputs: [
+        { name: 'path',     type: 'bytes'   },
+        { name: 'amountIn', type: 'uint256' },
+      ],
+      name: 'quoteExactInput',
+      outputs: [
+        { name: 'amountOut',                   type: 'uint256'   },
+        { name: 'sqrtPriceX96AfterList',       type: 'uint160[]' },
+        { name: 'initializedTicksCrossedList', type: 'uint32[]'  },
+        { name: 'gasEstimate',                 type: 'uint256'   },
+      ],
+      stateMutability: 'nonpayable',
+      type: 'function',
+    },
   ];
 
   var ROUTER_ABI = [
@@ -213,8 +292,12 @@
     pickerTarget: 'from',
   };
 
-  /* Cached read-only JsonRpcProvider per chain */
+  /* Cached read-only JsonRpcProvider per chain (fallback) */
   var _readProviders = {};
+
+  /* Cached Web3Provider wrapping the wallet (preferred for QuoterV2 callStatic) */
+  var _walletProvider      = null;
+  var _walletProviderChain = null;
 
   /* ═══════════════════════════════════════════════════════════
      HELPERS
@@ -236,8 +319,30 @@
     return isNative(addr) ? (WETH[chainId] || addr) : addr;
   }
 
-  /* Cached read-only provider (mirrors portfolio.js pattern) */
+  /* Provider resolution — three-tier priority:
+     1. Wallet's own provider (Web3Provider wrapping privyProvider) — preferred because
+        it routes through Privy/MetaMask infra which fully supports QuoterV2's revert-
+        based callStatic simulation. Public RPCs sometimes drop the revert data.
+     2. Cached JsonRpcProvider against our public RPCs — fallback when no wallet.
+     Only used for reads. All writes go through getSigner() regardless. */
   function getReadProvider(chainId) {
+    var curChain = window.STATE && STATE.network && Number(STATE.network);
+
+    /* Prefer the wallet provider when it's on the chain we're quoting */
+    if (window.privyProvider && curChain && curChain === Number(chainId)) {
+      if (_walletProvider && _walletProviderChain === Number(chainId)) {
+        return _walletProvider;
+      }
+      try {
+        _walletProvider      = new ethers.providers.Web3Provider(window.privyProvider);
+        _walletProviderChain = Number(chainId);
+        return _walletProvider;
+      } catch (e) {
+        console.warn('[swap] Web3Provider wrap failed, falling back to JsonRpcProvider:', e);
+      }
+    }
+
+    /* Fallback: public JsonRpcProvider */
     if (!_readProviders[chainId]) {
       var rpc = CHAIN_RPC[chainId];
       if (!rpc) throw new Error('No public RPC for chain ' + chainId);
@@ -358,13 +463,46 @@
   }
 
   /* ═══════════════════════════════════════════════════════════
-     QUOTE ENGINE — V3 QuoterV2 via callStatic
-     callStatic simulates the call and returns output without
-     broadcasting a transaction. Cost: one eth_call per fee tier.
+     QUOTE ENGINE — three-tier architecture
+     
+     Tier 1: View-only quoter (pure view, no revert, works on any RPC)
+             Used for chains 1/10/56/137/8453.
+             Interface = QuoterV1 positional: (tokenIn, tokenOut, fee, amountIn, sqrtLimitX96)
+             Returns: amountOut only (uint256).
+     
+     Tier 2: QuoterV2 via wallet provider (revert-based but wallet infra handles it)
+             Used when view-quoter unavailable AND wallet is connected.
+             Interface = struct param. Returns 4 values.
+     
+     Tier 3: QuoterV2 via public JsonRpcProvider (last resort — may fail on some nodes)
   ═══════════════════════════════════════════════════════════ */
 
-  /* Quote one fee tier — returns { amountOut, gasEstimate, fee } or null */
-  function _quoteTier(quoter, tokenIn, tokenOut, amountIn, fee) {
+  /* ── View-only quoter: single fee tier, returns amountOut or null ── */
+  function _viewQuoteTier(tokenIn, tokenOut, fee, amountIn, chainId) {
+    var addr = VIEW_QUOTER[chainId];
+    if (!addr) return Promise.resolve(null);
+    var provider = getReadProvider(chainId);
+    var quoter   = new ethers.Contract(addr, VIEW_QUOTER_ABI, provider);
+
+    /* positional: (tokenIn, tokenOut, fee, amountIn, sqrtPriceLimitX96) */
+    return quoter.quoteExactInputSingle(tokenIn, tokenOut, fee, amountIn, 0)
+      .then(function (amountOut) {
+        if (!amountOut || amountOut.isZero()) return null;
+        return { amountOut: amountOut, gasEstimate: null, fee: fee, isMultiHop: false };
+      })
+      .catch(function (e) {
+        console.error('[swap] view-quoter tier-1 failed fee=' + fee + ':', e.message || e);
+        return null;
+      });
+  }
+
+  /* ── QuoterV2: single fee tier via callStatic, returns amountOut+gasEstimate or null ── */
+  function _v2QuoteTier(tokenIn, tokenOut, fee, amountIn, chainId) {
+    var addr = QUOTER_V2[chainId];
+    if (!addr) return Promise.resolve(null);
+    var provider = getReadProvider(chainId);
+    var quoter   = new ethers.Contract(addr, QUOTER_V2_ABI, provider);
+
     return quoter.callStatic.quoteExactInputSingle({
       tokenIn:           tokenIn,
       tokenOut:          tokenOut,
@@ -372,21 +510,26 @@
       fee:               fee,
       sqrtPriceLimitX96: 0,
     }).then(function (r) {
-      /* r = [amountOut, sqrtPriceX96After, ticksCrossed, gasEstimate] */
-      return (r[0] && !r[0].isZero())
-        ? { amountOut: r[0], gasEstimate: r[3], fee: fee, isMultiHop: false }
-        : null;
-    }).catch(function () { return null; });
+      /* r[0]=amountOut, r[1]=sqrtPriceX96After, r[2]=ticksCrossed, r[3]=gasEstimate */
+      if (!r[0] || r[0].isZero()) return null;
+      return { amountOut: r[0], gasEstimate: r[3], fee: fee, isMultiHop: false };
+    }).catch(function (e) {
+      console.error('[swap] QuoterV2 callStatic failed fee=' + fee + ':', e.message || e);
+      return null;
+    });
   }
 
-  /* Race all three fee tiers in parallel, return highest output */
+  /* ── Race all 3 fee tiers with the appropriate quoter for this chain ── */
   function getBestDirectQuote(tokenIn, tokenOut, amountIn, chainId) {
-    var addr = QUOTER_V2[chainId];
-    if (!addr) return Promise.resolve(null);
-    var quoter = new ethers.Contract(addr, QUOTER_V2_ABI, getReadProvider(chainId));
-    return Promise.all(FEE_TIERS.map(function (fee) {
-      return _quoteTier(quoter, tokenIn, tokenOut, amountIn, fee);
-    })).then(function (results) {
+    var hasViewQuoter = !!VIEW_QUOTER[chainId];
+
+    var tasks = FEE_TIERS.map(function (fee) {
+      return hasViewQuoter
+        ? _viewQuoteTier(tokenIn, tokenOut, fee, amountIn, chainId)
+        : _v2QuoteTier(tokenIn, tokenOut, fee, amountIn, chainId);
+    });
+
+    return Promise.all(tasks).then(function (results) {
       var valid = results.filter(Boolean);
       if (!valid.length) return null;
       return valid.reduce(function (best, c) {
@@ -395,7 +538,7 @@
     });
   }
 
-  /* Encode V3 multi-hop path bytes: tokenIn → (fee1) → mid → (fee2) → tokenOut */
+  /* ── Encode V3 multi-hop path ── */
   function encodePath(tokenIn, fee1, mid, fee2, tokenOut) {
     return ethers.utils.solidityPack(
       ['address','uint24','address','uint24','address'],
@@ -403,12 +546,8 @@
     );
   }
 
-  /* Try multi-hop routes via WETH and USDC as intermediaries */
+  /* ── Multi-hop quotes via WETH and USDC intermediaries ── */
   function getMultiHopQuote(tokenIn, tokenOut, amountIn, chainId) {
-    var addr = QUOTER_V2[chainId];
-    if (!addr) return Promise.resolve(null);
-    var quoter = new ethers.Contract(addr, QUOTER_V2_ABI, getReadProvider(chainId));
-
     var weth = WETH[chainId];
     var usdc = USDC[chainId];
     var tiL  = tokenIn.toLowerCase();
@@ -419,30 +558,63 @@
     if (usdc && usdc.toLowerCase() !== tiL && usdc.toLowerCase() !== toL) mids.push(usdc);
     if (!mids.length) return Promise.resolve(null);
 
-    var FEE_PAIRS = [[500,500],[500,3000],[3000,500],[3000,3000]];
-    var jobs = [];
+    var FEE_PAIRS   = [[500,500],[500,3000],[3000,500],[3000,3000]];
+    var hasView     = !!VIEW_QUOTER[chainId];
+    var viewAddr    = VIEW_QUOTER[chainId];
+    var v2Addr      = QUOTER_V2[chainId];
+    var provider    = getReadProvider(chainId);
 
+    var jobs = [];
     mids.forEach(function (mid) {
       FEE_PAIRS.forEach(function (pair) {
         var path = encodePath(tokenIn, pair[0], mid, pair[1], tokenOut);
-        jobs.push(
-          quoter.callStatic.quoteExactInput(path, amountIn)
-            .then(function (r) {
-              return (r[0] && !r[0].isZero())
-                ? {
-                    amountOut:    r[0],
-                    gasEstimate:  r[3],
-                    fee:          null,
-                    isMultiHop:   true,
-                    path:         path,
-                    intermediate: mid,
-                    fee1:         pair[0],
-                    fee2:         pair[1],
-                  }
-                : null;
+
+        var job;
+        if (hasView && viewAddr) {
+          var vq = new ethers.Contract(viewAddr, VIEW_QUOTER_ABI, provider);
+          job = vq.quoteExactInput(path, amountIn)
+            .then(function (amountOut) {
+              if (!amountOut || amountOut.isZero()) return null;
+              return {
+                amountOut:    amountOut,
+                gasEstimate:  null,
+                fee:          null,
+                isMultiHop:   true,
+                path:         path,
+                intermediate: mid,
+                fee1:         pair[0],
+                fee2:         pair[1],
+              };
             })
-            .catch(function () { return null; })
-        );
+            .catch(function (e) {
+              console.error('[swap] view multi-hop failed:', e.message || e);
+              return null;
+            });
+        } else if (v2Addr) {
+          var v2q = new ethers.Contract(v2Addr, QUOTER_V2_ABI, provider);
+          job = v2q.callStatic.quoteExactInput(path, amountIn)
+            .then(function (r) {
+              if (!r[0] || r[0].isZero()) return null;
+              return {
+                amountOut:    r[0],
+                gasEstimate:  r[3],
+                fee:          null,
+                isMultiHop:   true,
+                path:         path,
+                intermediate: mid,
+                fee1:         pair[0],
+                fee2:         pair[1],
+              };
+            })
+            .catch(function (e) {
+              console.error('[swap] v2 multi-hop failed:', e.message || e);
+              return null;
+            });
+        } else {
+          job = Promise.resolve(null);
+        }
+
+        jobs.push(job);
       });
     });
 
@@ -455,7 +627,7 @@
     });
   }
 
-  /* Master quote: direct first (parallel fee tiers), multi-hop fallback */
+  /* ── Master quote: direct, then multi-hop fallback ── */
   function getQuote(tokenIn, tokenOut, amountIn, chainId) {
     return getBestDirectQuote(tokenIn, tokenOut, amountIn, chainId)
       .then(function (direct) {
@@ -1510,8 +1682,12 @@
     if (el) mountSwapCard(el);
   });
 
-  /* Network change — reset to native and remount */
+  /* Network change — reset provider cache and remount */
   document.addEventListener('state:network', function () {
+    /* Invalidate wallet provider cache — chain changed, need fresh Web3Provider */
+    _walletProvider      = null;
+    _walletProviderChain = null;
+
     S.fromAddress = 'NATIVE';
     S.toAddress   = null;
     ['right-panel-content', 'mobile-swap'].forEach(function (id) {
