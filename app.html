@@ -1702,11 +1702,11 @@
 
     /* ══════════════════════════════════════════════════════════════
        EXPLORE TAB
-       Market browse. Search + chain filter + category tabs + sorted list.
-       Reuses .asset-row / .asset-row-* from core.css — no duplication.
+       Market browse. CoinGecko data. Search + chain filter +
+       category tabs + sortable columns. In-place price updates.
+       Reuses .asset-row / .asset-row-* from core.css.
        ══════════════════════════════════════════════════════════════ */
 
-    /* ── Outer container ── */
     .explore-view {
       display: flex;
       flex-direction: column;
@@ -1717,7 +1717,6 @@
       overflow: hidden;
     }
 
-    /* ── Search row ── */
     .explore-search-row {
       padding: 0 var(--sp-3) 10px;
     }
@@ -1736,11 +1735,7 @@
       border-color: var(--em-lo);
       box-shadow: 0 0 0 2px var(--em-dim);
     }
-    .explore-search-icon {
-      flex-shrink: 0;
-      opacity: .45;
-      pointer-events: none;
-    }
+    .explore-search-icon { flex-shrink:0; opacity:.45; pointer-events:none; }
     .explore-search-input {
       flex: 1;
       background: transparent;
@@ -1752,7 +1747,7 @@
       letter-spacing: .02em;
       min-width: 0;
     }
-    .explore-search-input::placeholder { color: var(--dim); opacity: .65; }
+    .explore-search-input::placeholder { color: var(--dim); opacity:.65; }
     .explore-search-clear {
       display: flex;
       align-items: center;
@@ -1767,9 +1762,8 @@
       flex-shrink: 0;
       transition: opacity 120ms var(--ease-std), color 120ms var(--ease-std);
     }
-    .explore-search-clear:hover { opacity: 1; color: var(--br); }
+    .explore-search-clear:hover { opacity:1; color:var(--br); }
 
-    /* ── Chain pills ── */
     .explore-chain-pills {
       display: flex;
       gap: 6px;
@@ -1778,8 +1772,7 @@
       scrollbar-width: none;
       -ms-overflow-style: none;
     }
-    .explore-chain-pills::-webkit-scrollbar { display: none; }
-
+    .explore-chain-pills::-webkit-scrollbar { display:none; }
     .explore-chain-pill {
       display: inline-flex;
       align-items: center;
@@ -1797,22 +1790,17 @@
       cursor: none;
       flex-shrink: 0;
       -webkit-tap-highlight-color: transparent;
-      transition:
-        color       140ms var(--ease-std),
-        border-color 140ms var(--ease-std),
-        background  140ms var(--ease-std);
+      transition: color 140ms var(--ease-std), border-color 140ms var(--ease-std), background 140ms var(--ease-std);
     }
-    .explore-chain-pill:hover         { color: var(--em-2); border-color: var(--em-lo); }
-    .explore-chain-pill.active        { color: var(--br); border-color: var(--em-lo); background: rgba(156,61,187,.10); }
+    .explore-chain-pill:hover  { color:var(--em-2); border-color:var(--em-lo); }
+    .explore-chain-pill.active { color:var(--br); border-color:var(--em-lo); background:rgba(156,61,187,.10); }
     .explore-chain-dot {
-      width: 6px;
-      height: 6px;
+      width: 6px; height: 6px;
       border-radius: 50%;
       flex-shrink: 0;
       display: inline-block;
     }
 
-    /* ── Category tabs ── */
     .explore-categories {
       display: flex;
       padding: 0 var(--sp-3);
@@ -1821,10 +1809,8 @@
       -ms-overflow-style: none;
       border-bottom: 1px solid var(--trace);
       margin-bottom: 2px;
-      gap: 0;
     }
-    .explore-categories::-webkit-scrollbar { display: none; }
-
+    .explore-categories::-webkit-scrollbar { display:none; }
     .explore-cat {
       padding: 6px 12px 7px;
       background: transparent;
@@ -1838,14 +1824,13 @@
       cursor: none;
       white-space: nowrap;
       flex-shrink: 0;
-      margin-bottom: -1px; /* bleed over border-bottom of parent */
+      margin-bottom: -1px;
       -webkit-tap-highlight-color: transparent;
       transition: color 140ms var(--ease-std), border-color 140ms var(--ease-std);
     }
-    .explore-cat:hover  { color: var(--em-2); }
-    .explore-cat.active { color: var(--br); border-bottom-color: var(--em); }
+    .explore-cat:hover  { color:var(--em-2); }
+    .explore-cat.active { color:var(--br); border-bottom-color:var(--em); }
 
-    /* ── Column header ── */
     .explore-col-header {
       display: grid;
       grid-template-columns: 1fr auto auto;
@@ -1885,32 +1870,25 @@
       -webkit-tap-highlight-color: transparent;
       transition: color 140ms var(--ease-std);
     }
-    .explore-col-sortable:hover     { color: var(--em-2); }
-    .explore-col-sortable.sort-active { color: var(--br); }
-    .explore-col-price  { min-width: 60px; justify-content: flex-end; }
-    .explore-col-change { min-width: 44px; justify-content: flex-end; }
+    .explore-col-sortable:hover      { color:var(--em-2); }
+    .explore-col-sortable.sort-active { color:var(--br); }
+    .explore-col-price  { min-width:60px; justify-content:flex-end; }
+    .explore-col-change { min-width:44px; justify-content:flex-end; }
 
-    /* ── Sort arrow SVG ── */
     .explore-sort-arrow {
       display: inline-flex;
       align-items: center;
       opacity: .35;
       transition: opacity 140ms var(--ease-std);
     }
-    .explore-col-sortable:hover       .explore-sort-arrow { opacity: .65; }
-    .explore-col-sortable.sort-active .explore-sort-arrow { opacity: 1; }
-
-    /* Default: both paths dimmed */
+    .explore-col-sortable:hover       .explore-sort-arrow { opacity:.65; }
+    .explore-col-sortable.sort-active .explore-sort-arrow { opacity:1; }
     .sort-up-path, .sort-dn-path { stroke: currentColor; }
+    .explore-col-sortable.sort-desc .sort-up-path { opacity:1; }
+    .explore-col-sortable.sort-desc .sort-dn-path { opacity:.25; }
+    .explore-col-sortable.sort-asc  .sort-up-path { opacity:.25; }
+    .explore-col-sortable.sort-asc  .sort-dn-path { opacity:1; }
 
-    /* Active desc: up-arrow lit, down dimmed */
-    .explore-col-sortable.sort-desc .sort-up-path { opacity: 1; }
-    .explore-col-sortable.sort-desc .sort-dn-path { opacity: .25; }
-    /* Active asc: down-arrow lit, up dimmed */
-    .explore-col-sortable.sort-asc  .sort-up-path { opacity: .25; }
-    .explore-col-sortable.sort-asc  .sort-dn-path { opacity: 1; }
-
-    /* ── Token list ── */
     .explore-list {
       flex: 1;
       overflow-y: auto;
@@ -1920,22 +1898,16 @@
       scrollbar-width: thin;
       scrollbar-color: rgba(156,61,187,.18) transparent;
     }
-    .explore-list::-webkit-scrollbar       { width: 3px; }
-    .explore-list::-webkit-scrollbar-track { background: transparent; }
-    .explore-list::-webkit-scrollbar-thumb { background: rgba(156,61,187,.20); border-radius: 99px; }
+    .explore-list::-webkit-scrollbar       { width:3px; }
+    .explore-list::-webkit-scrollbar-track { background:transparent; }
+    .explore-list::-webkit-scrollbar-thumb { background:rgba(156,61,187,.20); border-radius:99px; }
 
-    /* Explore rows inherit .asset-row — cursor already none globally */
-    .explore-row { cursor: none; }
+    .explore-row { cursor:none; }
+    .explore-arrow { font-size:.50rem; margin-right:2px; vertical-align:baseline; line-height:1; }
 
-    /* Change arrow glyph (▲▼) sizing */
-    .explore-arrow {
-      font-size: .50rem;
-      margin-right: 2px;
-      vertical-align: baseline;
-      line-height: 1;
-    }
+    /* Loading state on row tap while address resolves */
+    .explore-row-loading { opacity:.55; pointer-events:none; }
 
-    /* ── Empty state ── */
     .explore-empty {
       display: flex;
       flex-direction: column;
@@ -1950,6 +1922,102 @@
       text-transform: uppercase;
       text-align: center;
       min-height: 180px;
+    }
+
+    /* ══════════════════════════════════════════════════════════════
+       PHASE 5 (swap.js rewrite) — CHAIN CHIPS + PCT BUTTONS
+       Replaces .swap-network-bar with inline chain selector.
+       Adds 25% / 50% / MAX buttons below FROM slot.
+       ══════════════════════════════════════════════════════════════ */
+
+    /* ── Chain chip row (sits above .swap-card inside .swap-view) ── */
+    .swap-chain-chips {
+      max-width: 440px;
+      width: 100%;
+      display: flex;
+      gap: var(--sp-2);
+      overflow-x: auto;
+      padding: 0 2px var(--sp-2);
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+    .swap-chain-chips::-webkit-scrollbar { display: none; }
+
+    .swap-chain-chip {
+      flex-shrink: 0;
+      height: 26px;
+      padding: 0 var(--sp-3);
+      border-radius: 13px;
+      border: 1px solid var(--trace);
+      background: transparent;
+      font-family: var(--fm);
+      font-size: .54rem;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--dim);
+      cursor: none;
+      white-space: nowrap;
+      transition:
+        border-color 140ms var(--ease-std),
+        color        140ms var(--ease-std),
+        background   140ms var(--ease-std),
+        opacity      120ms var(--ease-std);
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .swap-chain-chip:hover {
+      border-color: var(--em-lo);
+      color: var(--em-2);
+    }
+    .swap-chain-chip.active {
+      border-color: var(--em);
+      background: rgba(156,61,187,.10);
+      color: var(--em-2);
+    }
+    .swap-chain-chip.switching {
+      opacity: .35;
+      pointer-events: none;
+    }
+
+    /* ── FROM section wrapper (label + slot + pct row stacked) ── */
+    .swap-from-section { display: block; }
+
+    /* ── 25% / 50% / MAX percentage fill buttons ── */
+    .swap-pct-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .swap-pct-btn {
+      flex: 1;
+      height: 26px;
+      border: 1px solid var(--trace);
+      border-radius: 6px;
+      background: transparent;
+      font-family: var(--fm);
+      font-size: .52rem;
+      letter-spacing: .20em;
+      text-transform: uppercase;
+      color: var(--dim);
+      cursor: none;
+      transition:
+        border-color 120ms var(--ease-std),
+        color        120ms var(--ease-std),
+        background   120ms var(--ease-std),
+        transform     80ms var(--ease-spr);
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .swap-pct-btn:hover {
+      border-color: var(--em-lo);
+      color: var(--em-2);
+      background: rgba(156,61,187,.06);
+    }
+    .swap-pct-btn:active {
+      transform: scale(.93);
+      transition: transform 60ms var(--ease-spr);
     }
 
     /* ══════════════════════════════════════════════════════════════
@@ -2854,6 +2922,7 @@
 <script src="prices.js"></script>
 <script src="swap.js"></script>
 <script src="portfolio.js"></script>
+<script src="market.js"></script>
 <script src="explore.js"></script>
 <script src="transfer.js"></script>
 <script>

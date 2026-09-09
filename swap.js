@@ -1,1552 +1,1557 @@
-/* ═══════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════
    OBSIDEUM — swap.js
-   Phase 5A — Swap UI (complete)
-   Phase 5B — Uniswap Trading API: quotes · routing · execution · UniswapX
-   Flags 1–5 resolved. Docs-verified. Production grade.
+   Phase 5 (rewritten): on-chain DEX via Uniswap V3.
+
+   Quote  → QuoterV2.quoteExactInputSingle  (callStatic, all 3 fee tiers)
+   Route  → getBestDirectQuote → getMultiHopQuote (WETH + USDC intermediaries)
+   Exec   → SwapRouter02.exactInputSingle / exactInput
+   Native → multicall(exactInput[Single], unwrapWETH9)  — no WETH UX exposed
+   Approve→ ERC-20.approve  (Permit2 removed — no backend, no CORS)
+   Network→ wallet_switchEthereumChain → wallet_addEthereumChain fallback
+
+   No centralized API. No CORS risk. No API keys.
+   Reads: JsonRpcProvider (public RPCs, mirrors portfolio.js).
+   Writes: window.privyProvider (Privy EIP-1193 bridge).
+
    UNCHAINED9. Built by Waeven Xrysmond.
-═══════════════════════════════════════════════════════════════════ */
+═══════════════════════════════════════════════════════════ */
+
+'use strict';
+
 (function () {
-  'use strict';
 
-  /* ════════════════════════════════════════════════════════
-     CONSTANTS — Phase 5B
+  /* ═══════════════════════════════════════════════════════════
+     CONTRACT ADDRESSES — per chain
+  ═══════════════════════════════════════════════════════════ */
 
-     Trading API base URL verified at:
-     api-docs.uniswap.org/api-reference/swapping/quote
-     API key provided by Waeven Xrysmond.
-
-     No SWAP_ROUTER_02, QUOTER_V2, FLASHBOTS_RPC, DEFAULT_FEE,
-     FEE_FACTOR, or TRADING_API_ROUTER — all removed in Phase 5B.
-     Approval is handled by /check_approval endpoint (Permit2).
-     MEV protection is UniswapX routing, not Flashbots broadcast.
-  ════════════════════════════════════════════════════════ */
-  var UNISWAP_API_KEY  = '7ydkXOSzAfaM4oimvBHhPEDsujSgqE_KTd3yhIaKGqs';
-  var UNISWAP_API_BASE = 'https://trade-api.gateway.uniswap.org/v1';
-
-  /* Request header — must be consistent across /quote, /check_approval, /swap, /order */
-  var UNISWAP_ROUTER_VERSION = '2.0';
-
-  /* Native token sentinel in tokenList → API requires the zero address */
-  var NATIVE_API_ADDR = '0x0000000000000000000000000000000000000000';
-
-  var WETH_ADDR = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
-  var USDC_ADDR = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
-
-  /* Human-readable chain names for the network bar in the swap card */
-  var CHAIN_NAMES = {
-    1:      'Ethereum',
-    10:     'Optimism',
-    56:     'BNB Chain',
-    130:    'Unichain',
-    137:    'Polygon',
-    8453:   'Base',
-    42161:  'Arbitrum One',
-    43114:  'Avalanche',
+  /* Uniswap V3 QuoterV2 — callStatic only, zero gas cost to caller */
+  var QUOTER_V2 = {
+    1:      '0x61fFE014bA17989E743c5F6cB21bF9697530B21e',
+    10:     '0x61fFE014bA17989E743c5F6cB21bF9697530B21e',
+    56:     '0x78D78E420Da98ad378D7799bE8f4AF69033EB077',
+    130:    '0x385a5cf5f83e99f7bb2852b6a19c3538b9fa7658',  /* docs.uniswap.org/contracts/v3/reference/deployments/unichain-deployments */
+    137:    '0x61fFE014bA17989E743c5F6cB21bF9697530B21e',
+    8453:   '0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a',  /* docs.uniswap.org/contracts/v3/reference/deployments/base-deployments */
+    42161:  '0x61fFE014bA17989E743c5F6cB21bF9697530B21e',
+    43114:  '0xbe0F5544EC67e9B3b2D979aaA43f18Fd87E6257F',
   };
 
-  /* ════════════════════════════════════════════════════════
-     ABIs
-     ERC-20 retained only for balance reads if needed in future.
-     All approval logic now handled by /check_approval endpoint.
-  ════════════════════════════════════════════════════════ */
-  var ERC20_ABI = [
-    'function allowance(address owner, address spender) view returns (uint256)',
-    'function approve(address spender, uint256 amount) returns (bool)'
+  /* Uniswap V3 SwapRouter02 — executes exactInput[Single] */
+  var SWAP_ROUTER_02 = {
+    1:      '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
+    10:     '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
+    56:     '0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2',
+    130:    '0x73855d06de49d0fe4a9c42636ba96c62da12ff9c',  /* docs.uniswap.org/contracts/v3/reference/deployments/unichain-deployments */
+    137:    '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
+    8453:   '0x2626664c2603336E57B271c5C0b26F421741e481',
+    42161:  '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
+    43114:  '0xbb00FF08d01D300023C629E8fFfFcb65A5a578cE',
+  };
+
+  /* Wrapped native token per chain (ETH→WETH, BNB→WBNB, etc.) */
+  var WETH = {
+    1:      '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+    10:     '0x4200000000000000000000000000000000000006',
+    56:     '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',
+    130:    '0x4200000000000000000000000000000000000006',
+    137:    '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270',
+    8453:   '0x4200000000000000000000000000000000000006',
+    42161:  '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',
+    43114:  '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7',
+  };
+
+  /* USDC per chain — second hop candidate for non-direct routes */
+  var USDC = {
+    1:      '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+    10:     '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85',
+    56:     '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d',
+    130:    '0x078D782a88a93fABCE4c1d6e3B50ECD6D8Ca1De3',
+    137:    '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+    8453:   '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    42161:  '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+    43114:  '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6C',
+  };
+
+  /* V3 fee tiers probed in parallel: 0.05% / 0.3% / 1% */
+  var FEE_TIERS = [500, 3000, 10000];
+
+  /* Chain display metadata */
+  var CHAIN_META = {
+    1:      { label: 'ETH',  name: 'Ethereum'    },
+    10:     { label: 'OP',   name: 'Optimism'    },
+    56:     { label: 'BNB',  name: 'BNB Chain'   },
+    130:    { label: 'UNI',  name: 'Unichain'    },
+    137:    { label: 'POL',  name: 'Polygon'     },
+    8453:   { label: 'BASE', name: 'Base'         },
+    42161:  { label: 'ARB',  name: 'Arbitrum'    },
+    43114:  { label: 'AVAX', name: 'Avalanche'   },
+  };
+
+  /* Native token metadata per chain (mirrors portfolio.js CHAIN_NATIVE_TOKENS) */
+  var CHAIN_NATIVE = {
+    1:      { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    10:     { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    56:     { address: 'NATIVE', symbol: 'BNB',  name: 'BNB',       decimals: 18 },
+    130:    { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    137:    { address: 'NATIVE', symbol: 'POL',  name: 'Polygon',   decimals: 18 },
+    8453:   { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    42161:  { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    43114:  { address: 'NATIVE', symbol: 'AVAX', name: 'Avalanche', decimals: 18 },
+  };
+
+  /* Native gas reserve when user hits MAX (prevents tx failure) */
+  var NATIVE_GAS_RESERVE = ethers.utils.parseEther('0.0025');
+
+  /* Block explorers for TX links in success state */
+  var EXPLORER_TX = {
+    1:      'https://etherscan.io/tx/',
+    10:     'https://optimistic.etherscan.io/tx/',
+    56:     'https://bscscan.com/tx/',
+    130:    'https://uniscan.xyz/tx/',
+    137:    'https://polygonscan.com/tx/',
+    8453:   'https://basescan.org/tx/',
+    42161:  'https://arbiscan.io/tx/',
+    43114:  'https://snowtrace.io/tx/',
+  };
+
+  /* params for wallet_addEthereumChain when switching to a chain the wallet doesn't have */
+  var CHAIN_ADD_PARAMS = {
+    10: {
+      chainId: '0xa',     chainName: 'Optimism',
+      nativeCurrency: { name: 'Ether',  symbol: 'ETH',  decimals: 18 },
+      rpcUrls: ['https://mainnet.optimism.io'],
+      blockExplorerUrls: ['https://optimistic.etherscan.io'],
+    },
+    56: {
+      chainId: '0x38',    chainName: 'BNB Chain',
+      nativeCurrency: { name: 'BNB',    symbol: 'BNB',  decimals: 18 },
+      rpcUrls: ['https://bsc-dataseed.binance.org'],
+      blockExplorerUrls: ['https://bscscan.com'],
+    },
+    130: {
+      chainId: '0x82',    chainName: 'Unichain',
+      nativeCurrency: { name: 'Ether',  symbol: 'ETH',  decimals: 18 },
+      rpcUrls: ['https://mainnet.unichain.org'],
+      blockExplorerUrls: ['https://uniscan.xyz'],
+    },
+    137: {
+      chainId: '0x89',    chainName: 'Polygon',
+      nativeCurrency: { name: 'POL',    symbol: 'POL',  decimals: 18 },
+      rpcUrls: ['https://polygon-rpc.com'],
+      blockExplorerUrls: ['https://polygonscan.com'],
+    },
+    8453: {
+      chainId: '0x2105',  chainName: 'Base',
+      nativeCurrency: { name: 'Ether',  symbol: 'ETH',  decimals: 18 },
+      rpcUrls: ['https://mainnet.base.org'],
+      blockExplorerUrls: ['https://basescan.org'],
+    },
+    42161: {
+      chainId: '0xa4b1',  chainName: 'Arbitrum One',
+      nativeCurrency: { name: 'Ether',  symbol: 'ETH',  decimals: 18 },
+      rpcUrls: ['https://arb1.arbitrum.io/rpc'],
+      blockExplorerUrls: ['https://arbiscan.io'],
+    },
+    43114: {
+      chainId: '0xa86a',  chainName: 'Avalanche C-Chain',
+      nativeCurrency: { name: 'AVAX',   symbol: 'AVAX', decimals: 18 },
+      rpcUrls: ['https://api.avax.network/ext/bc/C/rpc'],
+      blockExplorerUrls: ['https://snowtrace.io'],
+    },
+  };
+
+  /* Public RPCs (mirrors portfolio.js — same providers, no duplication) */
+  var CHAIN_RPC = {
+    1:      'https://eth.llamarpc.com',
+    10:     'https://mainnet.optimism.io',
+    56:     'https://bsc-dataseed.binance.org',
+    130:    'https://mainnet.unichain.org',
+    137:    'https://polygon-rpc.com',
+    8453:   'https://mainnet.base.org',
+    42161:  'https://arb1.arbitrum.io/rpc',
+    43114:  'https://api.avax.network/ext/bc/C/rpc',
+  };
+
+  /* Trust Wallet CDN chain folder names (for logo resolution) */
+  var CHAIN_FOLDERS = {
+    1:     'ethereum',   10:    'optimism',  56:    'smartchain',
+    137:   'polygon',    8453:  'base',       42161: 'arbitrum',
+    43114: 'avalanche',
+  };
+
+  /* ═══════════════════════════════════════════════════════════
+     MINIMAL ABIs — only the selectors we actually call
+  ═══════════════════════════════════════════════════════════ */
+
+  var QUOTER_V2_ABI = [
+    'function quoteExactInputSingle(tuple(address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96) params) returns (uint256 amountOut,uint160 sqrtPriceX96After,uint32 initializedTicksCrossed,uint256 gasEstimate)',
+    'function quoteExactInput(bytes path,uint256 amountIn) returns (uint256 amountOut,uint160[] sqrtPriceX96AfterList,uint32[] initializedTicksCrossedList,uint256 gasEstimate)',
   ];
 
-  /* ════════════════════════════════════════════════════════
-     SHARED SWAP STATE
-  ════════════════════════════════════════════════════════ */
+  var ROUTER_ABI = [
+    'function exactInputSingle(tuple(address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96) params) payable returns (uint256 amountOut)',
+    'function exactInput(tuple(bytes path,address recipient,uint256 amountIn,uint256 amountOutMinimum) params) payable returns (uint256 amountOut)',
+    'function unwrapWETH9(uint256 amountMinimum,address recipient) payable',
+    'function refundETH() payable',
+    'function multicall(bytes[] data) payable returns (bytes[] results)',
+  ];
+
+  var ERC20_ABI = [
+    'function approve(address spender,uint256 amount) returns (bool)',
+    'function allowance(address owner,address spender) view returns (uint256)',
+    'function balanceOf(address account) view returns (uint256)',
+  ];
+
+  /* ═══════════════════════════════════════════════════════════
+     MODULE STATE
+  ═══════════════════════════════════════════════════════════ */
+
+  /* Active token selection — shared across desktop + mobile card instances */
   var S = {
-    fromAddress:  WETH_ADDR,
-    toAddress:    USDC_ADDR,
-    pickerTarget: null
+    fromAddress:  'NATIVE',
+    toAddress:    null,
+    pickerTarget: 'from',
   };
 
-  /* ════════════════════════════════════════════════════════
+  /* Cached read-only JsonRpcProvider per chain */
+  var _readProviders = {};
+
+  /* ═══════════════════════════════════════════════════════════
      HELPERS
-  ════════════════════════════════════════════════════════ */
-  function tokenList() {
-    /* Real data from tokens.js only. Never mock. Empty during loading. */
-    return (window.STATE && STATE.tokenList) || [];
+  ═══════════════════════════════════════════════════════════ */
+
+  function esc(s) {
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
-  function prices() {
-    /* Real prices from Uniswap V3 Subgraph via prices.js. */
-    return (window.STATE && STATE.prices) || {};
+  function isNative(addr) {
+    return !addr || addr === 'NATIVE';
   }
 
-  /* Convert the 'NATIVE' sentinel to the zero address the Uniswap API requires.
-   * Docs: "To swap native tokens, use 0x0000000000000000000000000000000000000000." */
-  function toApiAddr(address) {
-    return (address === 'NATIVE') ? NATIVE_API_ADDR : address;
+  /* Resolve NATIVE sentinel → chain WETH address for contract calls */
+  function toERC20Addr(addr, chainId) {
+    return isNative(addr) ? (WETH[chainId] || addr) : addr;
   }
 
-  /* Resolve the STATE.prices key for a token address.
-   * Native tokens are stored as 'NATIVE_<chainId>' by prices.js, not 'NATIVE'. */
-  function priceKey(address) {
-    if (address !== 'NATIVE') return address;
-    var chainId = (window.STATE && STATE.network) || 1;
-    return 'NATIVE_' + chainId;
-  }
-
-  function getToken(address) {
-    var list = tokenList();
-    for (var i = 0; i < list.length; i++) {
-      if (list[i].address === address) return list[i];
+  /* Cached read-only provider (mirrors portfolio.js pattern) */
+  function getReadProvider(chainId) {
+    if (!_readProviders[chainId]) {
+      var rpc = CHAIN_RPC[chainId];
+      if (!rpc) throw new Error('No public RPC for chain ' + chainId);
+      _readProviders[chainId] = new ethers.providers.JsonRpcProvider(rpc);
     }
-    return null;
+    return _readProviders[chainId];
   }
 
-  function logoUrl(address) {
-    /* Delegate to tokens.js for chain-aware resolution:
-     *   1. token.logoURI (https)   → direct
-     *   2. token.logoURI (ipfs://) → Cloudflare gateway
-     *   3. Trust Wallet CDN        → chain-specific folder, checksummed address
-     * Falls back to the ethereum CDN path if TOKENS is not yet loaded. */
-    if (window.TOKENS) {
-      var list    = tokenList();
-      var chainId = (window.STATE && STATE.network) || 1;
-      var found   = null;
-      for (var i = 0; i < list.length; i++) {
-        if (list[i].address.toLowerCase() === address.toLowerCase()) {
-          found = list[i]; break;
-        }
+  /* Privy signer for write operations */
+  function getSigner() {
+    if (!window.privyProvider) throw new Error('NO_WALLET');
+    return new ethers.providers.Web3Provider(window.privyProvider).getSigner();
+  }
+
+  /* Look up token metadata from STATE.tokenList, fall back to CHAIN_NATIVE */
+  function getTokenMeta(address, chainId) {
+    if (isNative(address)) return CHAIN_NATIVE[chainId] || CHAIN_NATIVE[1];
+    var list = (window.STATE && STATE.tokenList) || [];
+    return list.find(function (t) {
+      return t.address && t.address.toLowerCase() === (address || '').toLowerCase();
+    }) || null;
+  }
+
+  /* Trust Wallet CDN logo — chain-aware */
+  function logoUrl(address, chainId) {
+    var folder = CHAIN_FOLDERS[chainId] || 'ethereum';
+    if (isNative(address)) {
+      return 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/' +
+             folder + '/info/logo.png';
+    }
+    return 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/' +
+           folder + '/assets/' + address + '/logo.png';
+  }
+
+  /* Amount formatters */
+  function fmtN(n) {
+    if (n === 0) return '0';
+    if (n >= 1e9)  return (n / 1e9).toFixed(2)  + 'B';
+    if (n >= 1e6)  return (n / 1e6).toFixed(2)  + 'M';
+    if (n >= 1000) return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    if (n >= 1)    return n.toFixed(4);
+    if (n >= 1e-4) return n.toFixed(6);
+    return n.toExponential(3);
+  }
+
+  function fmtUsd(n) {
+    if (n == null || isNaN(n)) return '';
+    return '$' + (n >= 1000
+      ? n.toLocaleString('en-US', { maximumFractionDigits: 0 })
+      : n < 0.01 ? n.toFixed(4) : n.toFixed(2));
+  }
+
+  function fmtBN(bn, decimals) {
+    try { return fmtN(parseFloat(ethers.utils.formatUnits(bn, decimals || 18))); }
+    catch (e) { return '—'; }
+  }
+
+  /* Read held balance from STATE.portfolioBalances as BigNumber, or null */
+  function getHeldBN(address, chainId, decimals) {
+    var bals = window.STATE && STATE.portfolioBalances &&
+               STATE.portfolioBalances[chainId];
+    var entry = bals && bals[address];
+    if (!entry || entry.balance == null) return null;
+    try {
+      var s = String(parseFloat(entry.balance));
+      /* Clamp decimal places to token decimals */
+      var dot = s.indexOf('.');
+      if (dot !== -1 && s.length - dot - 1 > (decimals || 18)) {
+        s = parseFloat(s).toFixed(decimals || 18);
       }
-      var resolved = window.TOKENS.resolveLogoURI(
-        found || { address: address, logoURI: null },
-        chainId
-      );
-      if (resolved) return resolved;
-    }
-    /* Hard fallback: ethereum mainnet Trust Wallet path */
-    return 'https://raw.githubusercontent.com/trustwallet/assets/master/' +
-           'blockchains/ethereum/assets/' + address + '/logo.png';
+      return ethers.utils.parseUnits(s, decimals || 18);
+    } catch (e) { return null; }
   }
 
-  function fmtPrice(usd) {
-    if (usd >= 1000) return '$' + usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    if (usd >= 1)    return '$' + usd.toFixed(2);
-    return '$' + usd.toFixed(6);
+  /* Map a raw ethers error to a clean one-liner */
+  function parseEthError(err) {
+    if (!err) return 'Transaction failed';
+    var code = err.code;
+    var msg  = (err.message || String(err)).toLowerCase();
+    if (code === 4001 || /user (rejected|denied)/i.test(msg)) return 'REJECTED';
+    if (/insufficient funds/i.test(msg))         return 'INSUFFICIENT GAS';
+    if (/nonce/i.test(msg))                      return 'NONCE CONFLICT — RETRY';
+    if (/deadline|expired/i.test(msg))           return 'DEADLINE EXCEEDED';
+    if (/too little received|slippage/i.test(msg)) return 'SLIPPAGE EXCEEDED';
+    if (/execution reverted/i.test(msg))         return 'SWAP REVERTED';
+    if (/gas/i.test(msg))                        return 'GAS ESTIMATION FAILED';
+    return 'TRANSACTION FAILED';
   }
 
-  function fmtAmount(n) {
-    if (n >= 1000000) return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    if (n >= 1000)    return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-    if (n >= 1)       return n.toFixed(4);
-    if (n >= 0.0001)  return n.toFixed(6);
-    return n.toFixed(8);
+  /* Debounce factory */
+  function debounce(fn, ms) {
+    var t;
+    return function () { clearTimeout(t); t = setTimeout(fn, ms); };
   }
 
-  /* ════════════════════════════════════════════════════════
-     PROVIDER + SIGNER
-     Phase 6A: window.privyProvider (Privy EIP-1193) slots in here.
-     MEV protection = UniswapX routing via Trading API — no Flashbots.
-  ════════════════════════════════════════════════════════ */
-  var _fallbackProvider = null;
+  /* ═══════════════════════════════════════════════════════════
+     NETWORK SWITCHING
+  ═══════════════════════════════════════════════════════════ */
 
-  function getReadProvider() {
-    var pp = window.privyProvider || window.ethereum;
-    if (pp) return new ethers.providers.Web3Provider(pp);
-    if (!_fallbackProvider) {
-      _fallbackProvider = new ethers.providers.JsonRpcProvider('https://eth.llamarpc.com');
-    }
-    return _fallbackProvider;
+  function switchNetwork(chainId) {
+    return new Promise(function (resolve, reject) {
+      if (!window.privyProvider) { reject(new Error('NO_WALLET')); return; }
+      window.privyProvider.request({
+        method:  'wallet_switchEthereumChain',
+        params:  [{ chainId: '0x' + chainId.toString(16) }],
+      }).then(resolve).catch(function (err) {
+        /* 4902 = chain not added to wallet */
+        if ((err.code === 4902 || err.code === -32603) && CHAIN_ADD_PARAMS[chainId]) {
+          window.privyProvider.request({
+            method: 'wallet_addEthereumChain',
+            params: [CHAIN_ADD_PARAMS[chainId]],
+          }).then(resolve).catch(reject);
+        } else {
+          reject(err);
+        }
+      });
+    });
   }
 
-  function getWalletProvider() {
-    var pp = window.privyProvider || window.ethereum;
-    return pp ? new ethers.providers.Web3Provider(pp) : null;
+  /* ═══════════════════════════════════════════════════════════
+     QUOTE ENGINE — V3 QuoterV2 via callStatic
+     callStatic simulates the call and returns output without
+     broadcasting a transaction. Cost: one eth_call per fee tier.
+  ═══════════════════════════════════════════════════════════ */
+
+  /* Quote one fee tier — returns { amountOut, gasEstimate, fee } or null */
+  function _quoteTier(quoter, tokenIn, tokenOut, amountIn, fee) {
+    return quoter.callStatic.quoteExactInputSingle({
+      tokenIn:           tokenIn,
+      tokenOut:          tokenOut,
+      amountIn:          amountIn,
+      fee:               fee,
+      sqrtPriceLimitX96: 0,
+    }).then(function (r) {
+      /* r = [amountOut, sqrtPriceX96After, ticksCrossed, gasEstimate] */
+      return (r[0] && !r[0].isZero())
+        ? { amountOut: r[0], gasEstimate: r[3], fee: fee, isMultiHop: false }
+        : null;
+    }).catch(function () { return null; });
   }
 
-  async function getSwapSigner() {
-    var wp = getWalletProvider();
-    if (!wp) throw new Error('No wallet connected');
-    return wp.getSigner();
+  /* Race all three fee tiers in parallel, return highest output */
+  function getBestDirectQuote(tokenIn, tokenOut, amountIn, chainId) {
+    var addr = QUOTER_V2[chainId];
+    if (!addr) return Promise.resolve(null);
+    var quoter = new ethers.Contract(addr, QUOTER_V2_ABI, getReadProvider(chainId));
+    return Promise.all(FEE_TIERS.map(function (fee) {
+      return _quoteTier(quoter, tokenIn, tokenOut, amountIn, fee);
+    })).then(function (results) {
+      var valid = results.filter(Boolean);
+      if (!valid.length) return null;
+      return valid.reduce(function (best, c) {
+        return c.amountOut.gt(best.amountOut) ? c : best;
+      });
+    });
   }
 
-  /* ════════════════════════════════════════════════════════
-     TRADING API — SHARED HEADERS
-  ════════════════════════════════════════════════════════ */
-  function apiHeaders() {
-    return {
-      'Content-Type':               'application/json',
-      'Accept':                     'application/json',
-      'x-api-key':                  UNISWAP_API_KEY,
-      'x-universal-router-version': UNISWAP_ROUTER_VERSION
-    };
+  /* Encode V3 multi-hop path bytes: tokenIn → (fee1) → mid → (fee2) → tokenOut */
+  function encodePath(tokenIn, fee1, mid, fee2, tokenOut) {
+    return ethers.utils.solidityPack(
+      ['address','uint24','address','uint24','address'],
+      [tokenIn, fee1, mid, fee2, tokenOut]
+    );
   }
 
-  /* ════════════════════════════════════════════════════════
-     ROUTE HELPERS — docs-verified field names
+  /* Try multi-hop routes via WETH and USDC as intermediaries */
+  function getMultiHopQuote(tokenIn, tokenOut, amountIn, chainId) {
+    var addr = QUOTER_V2[chainId];
+    if (!addr) return Promise.resolve(null);
+    var quoter = new ethers.Contract(addr, QUOTER_V2_ABI, getReadProvider(chainId));
 
-     isDutchRoute: routing field = "DUTCH_V2" | "DUTCH_V3" | "DUTCH_LIMIT"
-     (all Dutch variants contain the string 'DUTCH')
+    var weth = WETH[chainId];
+    var usdc = USDC[chainId];
+    var tiL  = tokenIn.toLowerCase();
+    var toL  = tokenOut.toLowerCase();
 
-     extractAmountOut:
-       Classic → quoteResponse.quote.output.amount
-       Dutch   → quoteResponse.quote.orderInfo.outputs[0].endAmount
-                 (endAmount = guaranteed minimum after full decay)
+    var mids = [];
+    if (weth && weth.toLowerCase() !== tiL && weth.toLowerCase() !== toL) mids.push(weth);
+    if (usdc && usdc.toLowerCase() !== tiL && usdc.toLowerCase() !== toL) mids.push(usdc);
+    if (!mids.length) return Promise.resolve(null);
 
-     extractGasUSD:
-       Classic → quoteResponse.quote.gasFeeUSD
-       Dutch   → quoteResponse.quote.classicGasUseEstimateUSD
-  ════════════════════════════════════════════════════════ */
-  function isDutchRoute(routing) {
-    return !!(routing && routing.indexOf('DUTCH') > -1);
-  }
+    var FEE_PAIRS = [[500,500],[500,3000],[3000,500],[3000,3000]];
+    var jobs = [];
 
-  function extractAmountOut(quoteResponse) {
-    if (!quoteResponse || !quoteResponse.quote) return null;
-    var q = quoteResponse.quote;
-
-    /* Classic: output.amount */
-    if (q.output && q.output.amount) return q.output.amount.toString();
-
-    /* Dutch: guaranteed minimum = endAmount of first output */
-    if (q.orderInfo && q.orderInfo.outputs && q.orderInfo.outputs.length) {
-      var out = q.orderInfo.outputs[0];
-      return (out.endAmount || out.startAmount || '').toString();
-    }
-
-    /* Fallback: aggregatedOutputs */
-    if (q.aggregatedOutputs && q.aggregatedOutputs.length) {
-      var ao = q.aggregatedOutputs[0];
-      return (ao.minAmount || ao.amount || '').toString();
-    }
-
-    return null;
-  }
-
-  function extractGasUSD(quoteResponse) {
-    if (!quoteResponse || !quoteResponse.quote) return null;
-    var q = quoteResponse.quote;
-    /* Classic uses gasFeeUSD; Dutch carries classicGasUseEstimateUSD */
-    return q.gasFeeUSD || q.classicGasUseEstimateUSD || null;
-  }
-
-  /* ════════════════════════════════════════════════════════
-     PRICE IMPACT
-     Uses Trading API output vs Uniswap Subgraph spot — no fee applied.
-  ════════════════════════════════════════════════════════ */
-  function calcPriceImpact(amountInBN, amountOutBN, fromAddress, toAddress, decimalsIn, decimalsOut) {
-    var p         = prices();
-    var fromPrice = p[priceKey(fromAddress)] && p[priceKey(fromAddress)].usd;
-    var toPrice   = p[priceKey(toAddress)]   && p[priceKey(toAddress)].usd;
-    if (!fromPrice || !toPrice) return null;
-
-    var inNum  = parseFloat(ethers.utils.formatUnits(amountInBN,  decimalsIn));
-    var outNum = parseFloat(ethers.utils.formatUnits(amountOutBN, decimalsOut));
-
-    var valueInUSD     = inNum * fromPrice;
-    var expectedAtSpot = valueInUSD / toPrice;
-    var impact         = (1 - outNum / expectedAtSpot) * 100;
-    return Math.max(0, parseFloat(impact.toFixed(2)));
-  }
-
-  /* ════════════════════════════════════════════════════════
-     UNISWAP TRADING API — QUOTE
-     Docs: api-docs.uniswap.org/api-reference/swapping/quote
-
-     Field notes (all verified):
-     · tokenInChainId / tokenOutChainId — NOT a single chainId
-     · swapper — required by API; use wallet if available
-     · routingPreference 'BEST_PRICE' — all routes including UniswapX
-     · MEV protection off: add protocols filter ['V2','V3','V4']
-       to exclude UniswapX. Still uses 'BEST_PRICE' routing.
-     · 'CLASSIC', 'BEST_PRICE_V2', 'UNISWAPX_V2' are deprecated.
-     · generatePermitAsTransaction: false — get Permit2 message
-       (sign only, no on-chain tx for permit). Docs recommend false.
-
-     swapper param: pass real wallet at execute time for valid
-     permitData. At display-quote time, pass wallet if connected
-     or a stable placeholder — output amounts are unaffected.
-  ════════════════════════════════════════════════════════ */
-  async function getQuote(tokenIn, tokenOut, amountInBN, swapper) {
-    var chainId  = (window.STATE && STATE.network) ? STATE.network : 1;
-    var slippage = (window.STATE ? STATE.settings.slippage : 0.5);
-
-    /* MEV protection: allow UniswapX when enabled on mainnet */
-    var useUniswapX = !!(window.STATE &&
-                         STATE.settings.mevProtection &&
-                         STATE.network === 1);
-
-    var body = {
-      type:                     'EXACT_INPUT',
-      amount:                   amountInBN.toString(),
-      tokenIn:                  toApiAddr(tokenIn),   /* 'NATIVE' → 0x0000...0 */
-      tokenOut:                 toApiAddr(tokenOut),
-      tokenInChainId:           chainId,
-      tokenOutChainId:          chainId,
-      swapper:                  swapper || (window.STATE && STATE.wallet) || '0x0000000000000000000000000000000000000001',
-      slippageTolerance:        slippage,
-      routingPreference:        'BEST_PRICE',
-      generatePermitAsTransaction: false
-    };
-
-    /* Classic-only: restrict to on-chain protocols, exclude UniswapX */
-    if (!useUniswapX) {
-      body.protocols = ['V2', 'V3', 'V4'];
-    }
-
-    var res = await fetch(UNISWAP_API_BASE + '/quote', {
-      method:  'POST',
-      headers: apiHeaders(),
-      body:    JSON.stringify(body)
+    mids.forEach(function (mid) {
+      FEE_PAIRS.forEach(function (pair) {
+        var path = encodePath(tokenIn, pair[0], mid, pair[1], tokenOut);
+        jobs.push(
+          quoter.callStatic.quoteExactInput(path, amountIn)
+            .then(function (r) {
+              return (r[0] && !r[0].isZero())
+                ? {
+                    amountOut:    r[0],
+                    gasEstimate:  r[3],
+                    fee:          null,
+                    isMultiHop:   true,
+                    path:         path,
+                    intermediate: mid,
+                    fee1:         pair[0],
+                    fee2:         pair[1],
+                  }
+                : null;
+            })
+            .catch(function () { return null; })
+        );
+      });
     });
 
-    if (!res.ok) {
-      var errData = {};
-      try { errData = await res.json(); } catch (_) {}
-      throw new Error('Trading API: ' + (errData.errorCode || errData.detail || res.statusText));
-    }
-
-    return await res.json();
-    /*
-     * Response shape (docs-verified):
-     *   .routing          → 'CLASSIC' | 'DUTCH_V2' | 'DUTCH_V3' | 'DUTCH_LIMIT' | ...
-     *   .permitData       → { domain, values, types } — Permit2 EIP-712 to sign
-     *   .quote            → route-specific execution payload (see extractAmountOut / /swap / /order)
-     *   .quote.output.amount         → Classic: output amount (raw string)
-     *   .quote.gasFeeUSD             → Classic: gas estimate USD
-     *   .quote.orderInfo.outputs[0].endAmount → Dutch: guaranteed minimum output
-     *   .quote.classicGasUseEstimateUSD       → Dutch: gas estimate USD
-     *   .quote.orderId    → Dutch: orderId for /order POST and polling
-     */
-  }
-
-  /* ════════════════════════════════════════════════════════
-     CHECK APPROVAL — Permit2 gate
-     Docs: api-docs.uniswap.org/guides/permit2
-
-     /check_approval verifies whether the Permit2 contract
-     has a sufficient ERC-20 allowance for the given token.
-     If not, it returns a fully-formed approval transaction.
-     The Permit2 contract manages time-limited allowances
-     to the Universal Router — replacing direct SwapRouter02
-     approvals. A token approved once stays approved
-     indefinitely (until revoked).
-
-     Non-critical: if this call fails the swap still proceeds.
-     The swap tx itself will revert if allowance is genuinely
-     missing — that error surfaces through onError normally.
-  ════════════════════════════════════════════════════════ */
-  async function checkApprovalIfNeeded(tokenAddress, amountInBN, walletAddress, chainId, signer, callbacks) {
-    /* Native ETH/gas token never needs Permit2 approval */
-    if (tokenAddress === 'NATIVE' ||
-        tokenAddress === NATIVE_API_ADDR ||
-        tokenAddress === '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE') return;
-
-    try {
-      var res = await fetch(UNISWAP_API_BASE + '/check_approval', {
-        method:  'POST',
-        headers: apiHeaders(),
-        body: JSON.stringify({
-          token:         tokenAddress,
-          amount:        amountInBN.toString(),
-          walletAddress: walletAddress,
-          chainId:       chainId
-        })
+    return Promise.all(jobs).then(function (results) {
+      var valid = results.filter(Boolean);
+      if (!valid.length) return null;
+      return valid.reduce(function (best, c) {
+        return c.amountOut.gt(best.amountOut) ? c : best;
       });
-
-      if (!res.ok) return; /* non-critical — let swap proceed */
-
-      var data = await res.json();
-
-      /* data.approval is null when Permit2 already has sufficient allowance */
-      if (data.approval && data.approval.to) {
-        callbacks.onApproving();
-        var tx = await signer.sendTransaction(data.approval);
-        await tx.wait();
-      }
-    } catch (_) {
-      /* non-critical — proceed anyway */
-    }
+    });
   }
 
-  /* ════════════════════════════════════════════════════════
-     ORDER STATUS POLLER — Dutch Auction (UniswapX)
-     Docs: api-docs.uniswap.org/api-reference/swapping/get_uniswapx_order
-
-     Endpoint: GET /orders?orderId={id}
-     Response:  { orders: [{ orderStatus, txHash, settledAmounts }] }
-     Status values (lowercase): 'open', 'filled', 'cancelled', 'expired', 'error'
-     txHash: fill transaction hash (only present when filled)
-     settledAmounts[0].amountOut: actual output received (post-fill)
-
-     Returns { cancel } so wireCard can abort if user resets the card
-     before the Dutch Auction fills (Flag 5 — poll cancellation).
-  ════════════════════════════════════════════════════════ */
-  function pollOrderStatus(orderId, callbacks, timeout) {
-    var deadline  = Date.now() + (timeout || 180000); /* 3 min max — Dutch TTL ~60–180s */
-    var interval  = 2000;
-    var cancelled = false;
-
-    function cancel() { cancelled = true; }
-
-    function poll() {
-      if (cancelled) return;
-      if (Date.now() > deadline) {
-        callbacks.onError({ message: 'Order expired \u2014 try again' });
-        return;
-      }
-
-      fetch(UNISWAP_API_BASE + '/orders?orderId=' + encodeURIComponent(orderId), {
-        headers: { 'x-api-key': UNISWAP_API_KEY }
-      })
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        if (cancelled) return;
-
-        var order  = data.orders && data.orders[0];
-        if (!order) { setTimeout(poll, interval); return; } /* no data yet — keep polling */
-
-        var status = order.orderStatus; /* 'open' | 'filled' | 'cancelled' | 'expired' | 'error' */
-
-        if (status === 'filled') {
-          callbacks.onFilled(order); /* passes full order object: txHash + settledAmounts */
-        } else if (status === 'cancelled' || status === 'expired' || status === 'error') {
-          callbacks.onError({ message: 'Order ' + status + ' \u2014 try again' });
-        } else {
-          /* 'open' — still in progress */
-          setTimeout(poll, interval);
-        }
-      })
-      .catch(function () {
-        /* Network error — retry silently until deadline */
-        if (!cancelled) setTimeout(poll, interval);
+  /* Master quote: direct first (parallel fee tiers), multi-hop fallback */
+  function getQuote(tokenIn, tokenOut, amountIn, chainId) {
+    return getBestDirectQuote(tokenIn, tokenOut, amountIn, chainId)
+      .then(function (direct) {
+        if (direct) return direct;
+        return getMultiHopQuote(tokenIn, tokenOut, amountIn, chainId);
       });
-    }
-
-    setTimeout(poll, interval);
-    return { cancel: cancel };
   }
 
-  /* ════════════════════════════════════════════════════════
-     TRADE RECORDER — unchanged
-     No fee adjustment. API output is the exact received amount.
-  ════════════════════════════════════════════════════════ */
-  function recordTrade(hash, fromToken, toToken, fromAmountStr, toAmountNum, valueUSD) {
-    var trade = {
-      hash:       hash,
+  /* ═══════════════════════════════════════════════════════════
+     APPROVAL — ERC-20.approve (no Permit2)
+  ═══════════════════════════════════════════════════════════ */
+
+  function ensureApproval(tokenIn, amountIn, wallet, chainId, signer, onStatus) {
+    if (isNative(tokenIn)) return Promise.resolve(true);
+
+    var routerAddr = SWAP_ROUTER_02[chainId];
+    if (!routerAddr) return Promise.reject(new Error('No router for chain ' + chainId));
+
+    var token = new ethers.Contract(tokenIn, ERC20_ABI, signer);
+
+    return token.allowance(wallet, routerAddr).then(function (allowance) {
+      if (allowance.gte(amountIn)) return true;
+
+      var meta   = getTokenMeta(tokenIn, chainId);
+      var sym    = meta ? meta.symbol : 'TOKEN';
+      var useMax = window.STATE && STATE.settings && STATE.settings.autoApprove;
+
+      onStatus('APPROVING ' + sym + '\u2026');
+      return token.approve(
+        routerAddr,
+        useMax ? ethers.constants.MaxUint256 : amountIn
+      ).then(function (tx) {
+        onStatus('WAITING FOR APPROVAL\u2026');
+        return tx.wait().then(function () { return true; });
+      });
+    });
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     EXECUTION — SwapRouter02
+     Native input:  send ETH value; router wraps it internally
+     Native output: multicall(exactInput[Single], unwrapWETH9)
+  ═══════════════════════════════════════════════════════════ */
+
+  function executeSwapTx(opts) {
+    var tokenInAddr  = opts.tokenInAddr;
+    var tokenOutAddr = opts.tokenOutAddr;
+    var amountIn     = opts.amountIn;
+    var quote        = opts.quote;
+    var chainId      = opts.chainId;
+    var signer       = opts.signer;
+    var wallet       = opts.wallet;
+    var slippage     = opts.slippage || 0.5;
+
+    var routerAddr = SWAP_ROUTER_02[chainId];
+    if (!routerAddr) return Promise.reject(new Error('No router for chain ' + chainId));
+
+    var router      = new ethers.Contract(routerAddr, ROUTER_ABI, signer);
+    var isFromNative = isNative(tokenInAddr);
+    var isToNative   = isNative(tokenOutAddr);
+    var swapIn       = isFromNative ? WETH[chainId] : tokenInAddr;
+    var swapOut      = isToNative   ? WETH[chainId] : tokenOutAddr;
+
+    /* amountOutMinimum with slippage applied */
+    var bps    = Math.round(slippage * 100);
+    var minOut = quote.amountOut.mul(10000 - bps).div(10000);
+
+    var deadline = Math.floor(Date.now() / 1000) +
+                   ((window.STATE && STATE.settings && STATE.settings.deadline) || 20) * 60;
+    var txValue  = isFromNative ? amountIn : ethers.constants.Zero;
+
+    if (!quote.isMultiHop) {
+      /* ── Single-hop: exactInputSingle ── */
+      var params = {
+        tokenIn:           swapIn,
+        tokenOut:          swapOut,
+        fee:               quote.fee,
+        recipient:         isToNative ? routerAddr : wallet,
+        amountIn:          amountIn,
+        amountOutMinimum:  minOut,
+        sqrtPriceLimitX96: 0,
+      };
+      if (isToNative) {
+        var d1 = router.interface.encodeFunctionData('exactInputSingle', [params]);
+        var d2 = router.interface.encodeFunctionData('unwrapWETH9', [minOut, wallet]);
+        return router.multicall([d1, d2], { value: txValue });
+      }
+      return router.exactInputSingle(params, { value: txValue });
+
+    } else {
+      /* ── Multi-hop: exactInput with encoded path ── */
+      var mhParams = {
+        path:             quote.path,
+        recipient:        isToNative ? routerAddr : wallet,
+        amountIn:         amountIn,
+        amountOutMinimum: minOut,
+      };
+      if (isToNative) {
+        var d3 = router.interface.encodeFunctionData('exactInput', [mhParams]);
+        var d4 = router.interface.encodeFunctionData('unwrapWETH9', [minOut, wallet]);
+        return router.multicall([d3, d4], { value: txValue });
+      }
+      return router.exactInput(mhParams, { value: txValue });
+    }
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     TRADE RECORDING — writes to STATE.trades + localStorage
+     Schema must match what wallet.js and token detail read.
+  ═══════════════════════════════════════════════════════════ */
+
+  function recordTrade(opts) {
+    var record = {
+      type:       'swap',
+      fromSymbol: opts.fromMeta ? opts.fromMeta.symbol : '?',
+      toSymbol:   opts.toMeta   ? opts.toMeta.symbol   : '?',
+      fromAmount: opts.fromAmt,
+      toAmount:   opts.toAmt,
+      hash:       opts.hash,
+      chainId:    opts.chainId,
       timestamp:  Date.now(),
-      fromSymbol: fromToken.symbol,
-      toSymbol:   toToken.symbol,
-      fromAmount: fromAmountStr,
-      toAmount:   fmtAmount(toAmountNum),
-      valueUSD:   parseFloat(valueUSD.toFixed(2)),
-      network:    window.STATE ? STATE.network : 1,
-      type:       'spot'
     };
-    if (window.STATE) {
-      STATE.trades.unshift(trade);
-      try { localStorage.setItem('obsideum:trades', JSON.stringify(STATE.trades)); } catch (_) {}
-    }
-  }
-
-  /* ════════════════════════════════════════════════════════
-     EXECUTE SWAP — two paths, one success state.
-
-     Both paths re-quote at execution time with the real wallet
-     address. This ensures permitData is valid for the signer
-     (display quotes may have used a placeholder swapper).
-
-     ── Classic (V2 / V3 / V4 on-chain) ──────────────────
-     1.  Re-quote with real wallet → fresh permitData
-     2.  /check_approval → ERC20.approve(Permit2) if needed → callbacks.onApproving
-     3.  callbacks.onConfirming
-     4.  Sign freshQuote.permitData (EIP-712 Permit2 message)
-     5.  POST /swap → swap calldata { to, data, value, gasLimit, ... }
-     6.  signer.sendTransaction(swapData.swap)
-     7.  tx.wait() → recordTrade + callbacks.onSuccess(hash)
-
-     ── Dutch Auction (UniswapX V2 / V3) ─────────────────
-     1.  Re-quote with real wallet → Dutch order + permitData
-     2.  callbacks.onConfirming   ← no approve, no gas for approval
-     3.  Sign freshQuote.permitData (EIP-712 Permit2 for UniswapX reactor)
-     4.  POST /order { signature, quote: freshQuote.quote }
-     5.  orderId = freshQuote.quote.orderId (present in quote response)
-     6.  pollOrderStatus(orderId) → returns { cancel }
-     7.  callbacks.onPollStarted({ cancel }) → wireCard stores _pollCancel
-     8.  On fill: settledAmounts[0].amountOut → recordTrade → callbacks.onSuccess(txHash)
-     9.  On expiry: callbacks.onError
-
-     callbacks: { onApproving, onConfirming, onPollStarted, onSuccess, onError }
-  ════════════════════════════════════════════════════════ */
-  async function executeSwap(displayQuote, tokenIn, amountInBN, fromToken, toToken, fromAmountStr, callbacks) {
+    STATE.trades.unshift(record);
     try {
-      var signer  = await getSwapSigner();
-      var wallet  = await signer.getAddress();
-      var chainId = (window.STATE && STATE.network) ? STATE.network : 1;
-
-      /* Always re-quote with the real wallet address for valid permitData */
-      callbacks.onConfirming();
-      var freshQuote = await getQuote(tokenIn, toToken.address, amountInBN, wallet);
-
-      var routing = freshQuote.routing;
-      var dutch   = isDutchRoute(routing);
-      var p       = prices();
-
-      /* ─── Dutch Auction ──────────────────────────────── */
-      if (dutch) {
-        /* Sign Permit2 EIP-712 message — no approve tx, no gas for it */
-        var pd        = freshQuote.permitData;
-        var signature = '';
-        if (pd && pd.domain) {
-          signature = await signer._signTypedData(pd.domain, pd.types, pd.values);
-        }
-
-        /* Submit order */
-        var orderRes = await fetch(UNISWAP_API_BASE + '/order', {
-          method:  'POST',
-          headers: apiHeaders(),
-          body: JSON.stringify({
-            signature: signature,
-            quote:     freshQuote.quote
-          })
-        });
-        if (!orderRes.ok) {
-          var oErr = {};
-          try { oErr = await orderRes.json(); } catch (_) {}
-          throw new Error('Order submission failed: ' + (oErr.errorCode || orderRes.statusText));
-        }
-
-        /* orderId is in the quote response — no need to parse POST /order response */
-        var orderId = freshQuote.quote.orderId;
-        if (!orderId) throw new Error('No orderId in quote response');
-
-        /* Start polling — wireCard stores the cancel handle via onPollStarted */
-        var handle = pollOrderStatus(orderId, {
-          onFilled: function (orderData) {
-            /* Use actual settled amount when available (post-fill truth) */
-            var rawOut = (orderData.settledAmounts && orderData.settledAmounts[0])
-              ? orderData.settledAmounts[0].amountOut
-              : extractAmountOut(freshQuote);
-
-            if (!rawOut) rawOut = '0';
-            var amountOutBN = ethers.BigNumber.from(rawOut.toString());
-            var toAmtNum    = parseFloat(ethers.utils.formatUnits(amountOutBN, toToken.decimals));
-            var fromAmtNum  = parseFloat(ethers.utils.formatUnits(amountInBN,  fromToken.decimals));
-            var fromPrice   = p[fromToken.address] ? p[fromToken.address].usd : 0;
-
-            recordTrade(orderData.txHash, fromToken, toToken, fromAmountStr, toAmtNum, fromAmtNum * fromPrice);
-            callbacks.onSuccess(orderData.txHash);
-          },
-          onError: function (err) {
-            callbacks.onError(err);
-          }
-        });
-
-        /* Expose cancel handle to wireCard (_pollCancel) */
-        if (typeof callbacks.onPollStarted === 'function') {
-          callbacks.onPollStarted(handle);
-        }
-
-      /* ─── Classic ────────────────────────────────────── */
-      } else {
-        /* Step 1: approval gate (parallel with nothing — must happen before signing) */
-        await checkApprovalIfNeeded(tokenIn, amountInBN, wallet, chainId, signer, callbacks);
-
-        /* Step 2: sign Permit2 message from fresh quote */
-        callbacks.onConfirming();
-        var pData = freshQuote.permitData;
-        var sig   = '';
-        if (pData && pData.domain) {
-          sig = await signer._signTypedData(pData.domain, pData.types, pData.values);
-        }
-
-        /* Step 3: POST /swap to get final unsigned calldata */
-        var swapBody = { quote: freshQuote.quote };
-        if (sig)   swapBody.signature   = sig;
-        if (pData) swapBody.permitData  = pData;
-
-        var swapRes = await fetch(UNISWAP_API_BASE + '/swap', {
-          method:  'POST',
-          headers: apiHeaders(),
-          body:    JSON.stringify(swapBody)
-        });
-        if (!swapRes.ok) {
-          var sErr = {};
-          try { sErr = await swapRes.json(); } catch (_) {}
-          throw new Error('Swap calldata failed: ' + (sErr.errorCode || swapRes.statusText));
-        }
-        var swapData = await swapRes.json();
-        var swapTx   = swapData.swap; /* { to, from, data, value, gasLimit, maxFeePerGas, maxPriorityFeePerGas } */
-
-        /* Step 4: send the transaction */
-        var txReq = {
-          to:   swapTx.to,
-          data: swapTx.data,
-          value: swapTx.value || '0x0'
-        };
-        /* Use API gas estimates when present — avoids estimateGas failure on complex routes */
-        if (swapTx.gasLimit)            txReq.gasLimit            = swapTx.gasLimit;
-        if (swapTx.maxFeePerGas)        txReq.maxFeePerGas        = swapTx.maxFeePerGas;
-        if (swapTx.maxPriorityFeePerGas) txReq.maxPriorityFeePerGas = swapTx.maxPriorityFeePerGas;
-
-        var tx      = await signer.sendTransaction(txReq);
-        var receipt = await tx.wait();
-
-        /* Step 5: record + succeed */
-        var rawOut      = extractAmountOut(freshQuote);
-        if (!rawOut) rawOut = '0';
-        var amountOutBN = ethers.BigNumber.from(rawOut.toString());
-        var toAmtNum    = parseFloat(ethers.utils.formatUnits(amountOutBN, toToken.decimals));
-        var fromAmtNum  = parseFloat(ethers.utils.formatUnits(amountInBN,  fromToken.decimals));
-        var fromPrice   = p[fromToken.address] ? p[fromToken.address].usd : 0;
-
-        recordTrade(receipt.transactionHash, fromToken, toToken, fromAmountStr, toAmtNum, fromAmtNum * fromPrice);
-        callbacks.onSuccess(receipt.transactionHash);
-      }
-
-    } catch (err) {
-      callbacks.onError(err);
-    }
+      localStorage.setItem('obsideum:trades', JSON.stringify(STATE.trades.slice(0, 500)));
+    } catch (e) { /* storage full */ }
   }
 
-  /* ════════════════════════════════════════════════════════
-     LOGO FALLBACK — unchanged
-  ════════════════════════════════════════════════════════ */
-  function logoFallback(img, fallbackEl, symbol) {
-    if (!img) return;
-    img.onerror = function () {
-      img.style.display = 'none';
-      if (fallbackEl) {
-        fallbackEl.textContent   = symbol ? symbol[0] : '?';
-        fallbackEl.style.display = 'flex';
-      }
-    };
-  }
+  /* ═══════════════════════════════════════════════════════════
+     HTML BUILDER
+  ═══════════════════════════════════════════════════════════ */
 
-  /* ════════════════════════════════════════════════════════
-     BUILD SWAP CARD HTML
-     swap-fee removed. Replaced by #swap-gas + #swap-routing.
-     CSS for both lives in app.html (Flag 1 resolved there).
-  ════════════════════════════════════════════════════════ */
-  function buildSwapHTML(fromToken, toToken) {
-    var p     = prices();
-    var fp    = p[priceKey(fromToken.address)];
-    var tp    = p[priceKey(toToken.address)];
-    var fpStr = fp ? fmtPrice(fp.usd) : null;
-    var tpStr = tp ? fmtPrice(tp.usd) : null;
-
-    var chainId     = (window.STATE && STATE.network) || 1;
-    var networkName = CHAIN_NAMES[chainId] || ('Chain ' + chainId);
-
-    var chevron =
-      '<svg class="swap-chevron" width="8" height="5" viewBox="0 0 8 5" fill="none">' +
-      '<path class="swap-chevron-path" d="M1 1l3 3 3-3"' +
-      ' stroke="rgba(107,112,144,.55)" stroke-width="1.5"' +
-      ' stroke-linecap="round" stroke-linejoin="round"/></svg>';
-
-    function slotSel(idPrefix, token) {
-      return '<div class="swap-selector" id="' + idPrefix + '-selector" role="button" tabindex="0">' +
-        '<img class="swap-token-logo" id="' + idPrefix + '-logo"' +
-        ' src="' + logoUrl(token.address) + '" alt="' + token.symbol + '" width="22" height="22">' +
-        '<div class="swap-token-logo-fallback" style="display:none">' + token.symbol[0] + '</div>' +
-        '<span class="swap-token-symbol" id="' + idPrefix + '-symbol">' + token.symbol + '</span>' +
-        chevron + '</div>';
-    }
+  function _slotSelHTML(side, token, chainId) {
+    var addr   = token ? token.address : null;
+    var symbol = token ? (token.symbol || '\u2014') : '\u2014';
+    var src    = token ? esc(logoUrl(addr, chainId)) : '';
 
     return (
-      /* Network bar — shows active chain + tap to switch (navigates to Accounts tab) */
-      '<div class="swap-network-bar" id="swap-network-bar" role="button" tabindex="0"' +
-        ' aria-label="Switch network">' +
-        '<span class="swap-network-bar-dot"></span>' +
-        '<span class="swap-network-bar-name">' + networkName + '</span>' +
-        '<svg class="swap-network-bar-chevron" width="6" height="4" viewBox="0 0 8 5" fill="none">' +
-          '<path d="M1 1l3 3 3-3" stroke="currentColor" stroke-width="1.5"' +
-          ' stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<div class="swap-selector" id="' + side + '-selector"' +
+          ' role="button" tabindex="0" aria-label="Select ' + side + ' token">' +
+        '<img class="swap-token-logo" id="' + side + '-logo"' +
+            ' src="' + src + '" alt="' + esc(symbol) + '"' +
+            ' onerror="this.style.display=\'none\';' +
+              'var fb=document.getElementById(\'' + side + '-logo-fb\');' +
+              'if(fb){fb.style.display=\'flex\';}">' +
+        '<span class="swap-token-logo-fallback" id="' + side + '-logo-fb"' +
+            ' style="display:none">' + esc((symbol || '?').charAt(0)) + '</span>' +
+        '<span class="swap-token-symbol" id="' + side + '-symbol">' + esc(symbol) + '</span>' +
+        '<svg class="swap-chevron" viewBox="0 0 8 5" fill="none" aria-hidden="true">' +
+          '<path d="M1 1L4 4L7 1" stroke="var(--dim)" stroke-width="1.5"' +
+              ' stroke-linecap="round" stroke-linejoin="round"/>' +
         '</svg>' +
-      '</div>' +
+      '</div>'
+    );
+  }
 
+  function buildSwapHTML(fromToken, toToken, chainId) {
+    var activeNets = (window.STATE && STATE.settings && STATE.settings.activeNetworks)
+      || [1, 10, 8453, 42161];
+
+    /* Chain chip row */
+    var chipsHTML = activeNets.map(function (cid) {
+      var m = CHAIN_META[cid];
+      if (!m) return '';
+      return (
+        '<button class="swap-chain-chip' + (cid === chainId ? ' active' : '') + '"' +
+            ' data-chain-id="' + cid + '">' +
+          m.label +
+        '</button>'
+      );
+    }).join('');
+
+    return (
+      /* ── Chain chips ── */
+      '<div class="swap-chain-chips" id="swap-chain-chips">' + chipsHTML + '</div>' +
+
+      /* ── Main card ── */
       '<div class="swap-card glass-p" id="swap-card">' +
 
-        '<div>' +
+        /* FROM section + pct row share a wrapper */
+        '<div class="swap-from-section">' +
           '<span class="swap-side-label">FROM</span>' +
           '<div class="swap-slot" id="swap-from">' +
-            slotSel('from', fromToken) +
-            '<input class="swap-amount" id="from-amount" type="text"' +
-            ' inputmode="decimal" placeholder="0" autocomplete="off" spellcheck="false">' +
-            '<span class="swap-balance" id="from-balance">' +
-              (fpStr ? 'Price \u00b7 ' + fpStr : 'Balance \u2014') +
-            '</span>' +
+            _slotSelHTML('from', fromToken, chainId) +
+            '<input class="swap-amount" id="from-amount"' +
+                ' type="text" inputmode="decimal" placeholder="0"' +
+                ' autocomplete="off" spellcheck="false" aria-label="Amount to swap">' +
+            '<span class="swap-balance" id="from-balance">Balance \u2014</span>' +
+          '</div>' +
+          '<div class="swap-pct-row" id="swap-pct-row">' +
+            '<button class="swap-pct-btn" data-pct="25">25%</button>' +
+            '<button class="swap-pct-btn" data-pct="50">50%</button>' +
+            '<button class="swap-pct-btn" data-pct="100">MAX</button>' +
           '</div>' +
         '</div>' +
 
+        /* Direction flip */
         '<div class="swap-dir-wrap">' +
-          '<button class="swap-dir-btn" id="swap-dir" aria-label="Flip swap direction">\u21c5</button>' +
+          '<button class="swap-dir-btn" id="swap-dir" aria-label="Flip tokens">' +
+            '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">' +
+              '<path d="M4 1v9M4 10L2 8M4 10L6 8"' +
+                  ' stroke="var(--em-2)" stroke-width="1.4"' +
+                  ' stroke-linecap="round" stroke-linejoin="round"/>' +
+              '<path d="M10 13V4M10 4L8 6M10 4L12 6"' +
+                  ' stroke="var(--em-2)" stroke-width="1.4"' +
+                  ' stroke-linecap="round" stroke-linejoin="round"/>' +
+            '</svg>' +
+          '</button>' +
         '</div>' +
 
+        /* TO section */
         '<div>' +
           '<span class="swap-side-label">TO</span>' +
           '<div class="swap-slot" id="swap-to">' +
-            slotSel('to', toToken) +
-            '<div class="swap-amount-out" id="to-amount">\u2014</div>' +
-            '<span class="swap-balance" id="to-balance">' +
-              (tpStr ? 'Price \u00b7 ' + tpStr : 'Balance \u2014') +
-            '</span>' +
+            _slotSelHTML('to', toToken, chainId) +
+            '<span class="swap-amount-out" id="to-amount">\u2014</span>' +
+            '<span class="swap-balance" id="to-balance">Balance \u2014</span>' +
           '</div>' +
         '</div>' +
 
+        /* Meta row: rate + gas + route tag */
         '<div class="swap-meta">' +
           '<span class="swap-rate" id="swap-rate">\u2014</span>' +
           '<span class="swap-gas"     id="swap-gas"></span>' +
           '<span class="swap-routing" id="swap-routing" hidden></span>' +
         '</div>' +
 
+        /* Price impact (hidden until > 1%) */
         '<div class="swap-impact" id="swap-impact" hidden>' +
-          '<span class="swap-impact-label">Price Impact</span>' +
+          '<span class="swap-impact-label">PRICE IMPACT</span>' +
           '<span class="swap-impact-value" id="impact-value">\u2014</span>' +
         '</div>' +
 
+        /* Execute CTA */
         '<button class="btn btn-primary swap-execute" id="swap-execute" disabled>' +
           '<div class="btn-pulse-ring"></div>' +
           '<div class="btn-inner">' +
             '<div class="glass-sheen"></div>' +
-            '<span id="exec-label">EXECUTE SWAP</span>' +
+            '<span id="exec-label">ENTER AN AMOUNT</span>' +
           '</div>' +
         '</button>' +
 
-      '</div>' +
+      '</div>' + /* .swap-card */
 
+      /* ── Success state ── */
       '<div class="swap-success" id="swap-success" hidden>' +
         '<div class="success-ring">' +
-          '<svg class="success-check" viewBox="0 0 48 48" width="32" height="32">' +
-            '<polyline class="check-line" points="8,26 20,38 40,14"' +
-            ' stroke="var(--up)" stroke-width="2.5" fill="none"' +
-            ' stroke-linecap="round" stroke-linejoin="round"' +
-            ' stroke-dasharray="52" stroke-dashoffset="52"/>' +
+          '<svg class="success-check" width="28" height="28" viewBox="0 0 28 28" fill="none">' +
+            '<path class="check-line" d="M6 14L11 20L22 8"' +
+                ' stroke="var(--up)" stroke-width="2"' +
+                ' stroke-linecap="round" stroke-linejoin="round"/>' +
           '</svg>' +
         '</div>' +
-        '<span class="success-label">Swap Complete</span>' +
-        '<span class="success-sublabel">Transaction confirmed</span>' +
-        '<div class="success-hash" id="success-hash"></div>' +
-        '<a class="success-etherscan" id="success-etherscan"' +
-        ' href="#" target="_blank" rel="noopener" hidden>View on Etherscan \u2197</a>' +
-        '<button class="btn btn-primary swap-again" id="swap-again" hidden>' +
+        '<span class="success-label">SWAPPED</span>' +
+        '<span class="success-sublabel" id="success-sublabel"></span>' +
+        '<span class="success-hash"     id="success-hash"></span>' +
+        '<a class="success-etherscan"   id="success-etherscan"' +
+            ' target="_blank" rel="noopener noreferrer">VIEW ON EXPLORER</a>' +
+        '<button class="btn btn-primary swap-again" id="swap-again">' +
           '<div class="btn-pulse-ring"></div>' +
-          '<div class="btn-inner"><div class="glass-sheen"></div><span>SWAP AGAIN</span></div>' +
+          '<div class="btn-inner"><div class="glass-sheen"></div>' +
+            '<span>SWAP AGAIN</span>' +
+          '</div>' +
         '</button>' +
+      '</div>' +
+
+      /* ── Error state ── */
+      '<div class="swap-error" id="swap-error" hidden>' +
+        '<span class="swap-error-label" id="swap-error-label">FAILED</span>' +
+        '<button class="swap-retry" id="swap-retry">TRY AGAIN</button>' +
       '</div>'
     );
   }
 
-  /* ════════════════════════════════════════════════════════
-     WIRE A MOUNTED CARD
+  /* ═══════════════════════════════════════════════════════════
+     CARD WIRING
+     Called once per mounted .swap-view element.
+     All event handlers close over local state (_quote, _quoting, etc.)
+     so desktop + mobile instances are fully independent.
+  ═══════════════════════════════════════════════════════════ */
 
-     Phase 5B data-flow changes from 5A:
-     · _lastQuote: { quoteResponse, amountInBN, amountOutBN, impact }
-     · _pollCancel: stores Dutch Auction poll cancel fn (Flag 5)
-     · clearMeta: resets #swap-gas / #swap-routing
-     · cancelPoll: aborts in-flight poll (Swap Again, token flip, error)
-     · updateOutput: extracts amountOut via extractAmountOut(),
-       shows gas via extractGasUSD(), shows routing tag for Dutch
-     · showQuoteResult: rate line has no FEE_FACTOR
-     · updateExecLabel: separates "CONNECT WALLET" from "NETWORK UNAVAILABLE"
-     · Execute handler: pre-disables button; wires onPollStarted callback
-     · Swap Again: cancelPoll() before card reset
-  ════════════════════════════════════════════════════════ */
   function wireCard(container) {
+    /* ── DOM refs ── */
     var fromInput  = container.querySelector('#from-amount');
-    var toAmountEl = container.querySelector('#to-amount');
+    var toOutput   = container.querySelector('#to-amount');
+    var fromBal    = container.querySelector('#from-balance');
+    var toBal      = container.querySelector('#to-balance');
+    var fromSel    = container.querySelector('#from-selector');
+    var toSel      = container.querySelector('#to-selector');
+    var dirBtn     = container.querySelector('#swap-dir');
+    var execBtn    = container.querySelector('#swap-execute');
+    var execLabel  = container.querySelector('#exec-label');
     var rateEl     = container.querySelector('#swap-rate');
     var gasEl      = container.querySelector('#swap-gas');
     var routingEl  = container.querySelector('#swap-routing');
-    var impactEl   = container.querySelector('#swap-impact');
+    var impactDiv  = container.querySelector('#swap-impact');
     var impactVal  = container.querySelector('#impact-value');
-    var executeBtn = container.querySelector('#swap-execute');
-    var execLabel  = container.querySelector('#exec-label');
-    var dirBtn     = container.querySelector('#swap-dir');
-    var swapCard   = container.querySelector('#swap-card');
-    var swapSucc   = container.querySelector('#swap-success');
+    var cardEl     = container.querySelector('#swap-card');
+    var successDiv = container.querySelector('#swap-success');
+    var errorDiv   = container.querySelector('#swap-error');
+    var errorLabel = container.querySelector('#swap-error-label');
+    var chipsWrap  = container.querySelector('#swap-chain-chips');
+    var pctRow     = container.querySelector('#swap-pct-row');
 
-    var _debounce   = null;
-    var _rotation   = 0;
-    var _quoteSeq   = 0;
-    var _isMock     = false;
-    var _lastQuote  = null;  /* { quoteResponse, amountInBN, amountOutBN, impact } */
-    var _confirming = false;
-    var _confirmTmr = null;
-    var _pollCancel = null;  /* Dutch Auction poll cancel fn — Flag 5 */
+    /* ── Quote state ── */
+    var _quote           = null;
+    var _quoting         = false;
+    var _qtId            = 0;
+    var _impactConfirmed = false;
 
-    /* ── Logo fallbacks ── */
-    ['from', 'to'].forEach(function (side) {
-      var img = container.querySelector('#' + side + '-logo');
-      logoFallback(img, img && img.nextElementSibling,
-        (container.querySelector('#' + side + '-symbol') || {}).textContent || '?');
-    });
+    /* ── Accessors ── */
+    function chain()     { return (window.STATE && STATE.network) || 1; }
+    function fromMeta()  { return getTokenMeta(S.fromAddress, chain()); }
+    function toMeta()    { return getTokenMeta(S.toAddress,   chain()); }
+    function fromDec()   { var m = fromMeta(); return m ? m.decimals : 18; }
+    function toDec()     { var m = toMeta();   return m ? m.decimals : 18; }
 
-    /* ── Network bar — tap to go to Accounts tab (network toggles live there) ── */
-    var networkBar = container.querySelector('#swap-network-bar');
-    if (networkBar) {
-      function openNetworkSwitcher() {
-        /* On mobile: navigate to accounts tab via Phase 8D routing function.
-         * On desktop: open settings view where network toggles are accessible. */
-        if (window.innerWidth < 768) {
-          if (typeof window.setMobileTab === 'function') {
-            window.setMobileTab('accounts');
-          }
-        } else {
-          if (typeof window.setDesktopView === 'function') {
-            window.setDesktopView('settings');
-          } else if (typeof openWalletSheet === 'function') {
-            openWalletSheet();
+    /* ── Execute button state machine ── */
+    function setExec(state, label) {
+      /* state: 'disabled' | 'ready' | 'busy' | 'connect' */
+      execBtn.disabled = (state !== 'ready' && state !== 'connect');
+      execBtn.classList.toggle('confirming', state === 'busy');
+      execLabel.textContent = label;
+    }
+
+    function refreshExecState() {
+      if (!window.STATE || !STATE.connected) {
+        setExec('connect', 'CONNECT WALLET'); return;
+      }
+      var raw = fromInput ? fromInput.value.trim() : '';
+      var n   = parseFloat(raw);
+      if (!raw || isNaN(n) || n <= 0) {
+        setExec('disabled', 'ENTER AN AMOUNT'); return;
+      }
+      if (!S.toAddress) {
+        setExec('disabled', 'SELECT A TOKEN'); return;
+      }
+      if (S.fromAddress === S.toAddress) {
+        setExec('disabled', 'SELECT DIFFERENT TOKEN'); return;
+      }
+      if (_quoting) {
+        setExec('disabled', 'FINDING BEST RATE\u2026'); return;
+      }
+      if (!_quote) {
+        setExec('disabled', 'NO ROUTE FOUND'); return;
+      }
+      /* Balance check */
+      var held = getHeldBN(S.fromAddress, chain(), fromDec());
+      if (held !== null) {
+        try {
+          var amtBN = ethers.utils.parseUnits(raw, fromDec());
+          if (amtBN.gt(held)) { setExec('disabled', 'INSUFFICIENT BALANCE'); return; }
+        } catch (e) { setExec('disabled', 'INVALID AMOUNT'); return; }
+      }
+      /* High-impact second-confirm label */
+      if (impactDiv && !impactDiv.hidden && impactDiv.classList.contains('high') && !_impactConfirmed) {
+        setExec('ready', 'CONFIRM HIGH IMPACT \u2014 SWAP'); return;
+      }
+      setExec('ready', 'EXECUTE SWAP');
+    }
+
+    /* ── Balance display ── */
+    function refreshBals() {
+      var ch    = chain();
+      var bals  = window.STATE && STATE.portfolioBalances && STATE.portfolioBalances[ch];
+      var ftMeta = fromMeta();
+      var ttMeta = toMeta();
+
+      function balLine(entry, meta) {
+        if (!entry || entry.balance == null) return 'Balance \u2014';
+        var n   = parseFloat(entry.balance);
+        var sym = meta ? meta.symbol : '';
+        var usdPart = (entry.usd && entry.usd > 0) ? '  \u00b7  ' + fmtUsd(entry.usd) : '';
+        return 'Balance\u2002' + fmtN(n) + (sym ? ' ' + sym : '') + usdPart;
+      }
+
+      if (fromBal) fromBal.textContent = balLine(bals && bals[S.fromAddress], ftMeta);
+      if (toBal && S.toAddress) toBal.textContent = balLine(bals && bals[S.toAddress], ttMeta);
+      else if (toBal) toBal.textContent = 'Balance \u2014';
+    }
+
+    /* ── Reset output side ── */
+    function resetOutput() {
+      _quote = null;
+      if (toOutput)  { toOutput.textContent = '\u2014'; toOutput.classList.remove('has-value'); }
+      if (rateEl)    { rateEl.textContent = '\u2014'; rateEl.classList.remove('has-rate'); }
+      if (gasEl)     gasEl.textContent = '';
+      if (routingEl) routingEl.hidden = true;
+      if (impactDiv) impactDiv.hidden = true;
+      refreshExecState();
+    }
+
+    /* ── Render a resolved quote ── */
+    function renderQuote(quote, raw) {
+      _quote = quote;
+
+      /* Output amount */
+      var outFmt = fmtBN(quote.amountOut, toDec());
+      if (toOutput) { toOutput.textContent = outFmt; toOutput.classList.add('has-value'); }
+
+      /* Exchange rate */
+      try {
+        var inN  = parseFloat(raw);
+        var outN = parseFloat(ethers.utils.formatUnits(quote.amountOut, toDec()));
+        if (inN > 0 && outN > 0) {
+          var rate = outN / inN;
+          var fm   = fromMeta();
+          var tm   = toMeta();
+          if (rateEl) {
+            rateEl.textContent =
+              '1\u2009' + (fm ? fm.symbol : '?') + '\u2009=\u2009' +
+              fmtN(rate) + '\u2009' + (tm ? tm.symbol : '?');
+            rateEl.classList.add('has-rate');
           }
         }
+      } catch (e) {}
+
+      /* Gas estimate (QuoterV2 returns gas units; display as "~XXk gas") */
+      if (gasEl) {
+        try {
+          var gu = quote.gasEstimate && quote.gasEstimate.toNumber
+            ? quote.gasEstimate.toNumber()
+            : 0;
+          gasEl.textContent = gu > 0 ? '\u223c' + Math.round(gu / 1000) + 'k gas' : '';
+        } catch (e) { gasEl.textContent = ''; }
       }
-      networkBar.addEventListener('click', openNetworkSwitcher);
-      networkBar.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openNetworkSwitcher(); }
+
+      /* Route label */
+      if (routingEl) {
+        if (quote.isMultiHop) {
+          var midSym = '?';
+          var wch = WETH[chain()];
+          var uch = USDC[chain()];
+          if (wch && quote.intermediate && quote.intermediate.toLowerCase() === wch.toLowerCase()) {
+            var nat = CHAIN_NATIVE[chain()];
+            midSym = nat ? nat.symbol : 'WETH';
+          } else if (uch && quote.intermediate && quote.intermediate.toLowerCase() === uch.toLowerCase()) {
+            midSym = 'USDC';
+          }
+          routingEl.textContent =
+            'via\u2009' + midSym + '\u2009\u00b7\u2009' +
+            (quote.fee1 / 10000).toFixed(2) + '%\u2009+\u2009' +
+            (quote.fee2 / 10000).toFixed(2) + '%';
+          routingEl.hidden = false;
+        } else {
+          routingEl.textContent = 'V3\u2009\u00b7\u2009' + (quote.fee / 10000).toFixed(2) + '%';
+          routingEl.hidden = false;
+        }
+      }
+
+      /* Price impact (approximate, needs both token prices in STATE.prices) */
+      if (impactDiv && impactVal) {
+        try {
+          var ch2   = chain();
+          var inKey  = isNative(S.fromAddress) ? toERC20Addr(S.fromAddress, ch2) : S.fromAddress;
+          var outKey = isNative(S.toAddress)   ? toERC20Addr(S.toAddress,   ch2) : S.toAddress;
+          var inP    = STATE.prices && STATE.prices[inKey]  && STATE.prices[inKey].usd;
+          var outP   = STATE.prices && STATE.prices[outKey] && STATE.prices[outKey].usd;
+          if (inP && outP) {
+            var inVal  = parseFloat(raw) * inP;
+            var outVal = parseFloat(ethers.utils.formatUnits(quote.amountOut, toDec())) * outP;
+            if (inVal > 0 && outVal > 0) {
+              var impact = ((inVal - outVal) / inVal) * 100;
+              if (impact > 1) {
+                impactVal.textContent = impact.toFixed(2) + '%';
+                impactDiv.classList.toggle('high', impact > 5);
+                impactDiv.hidden = false;
+              } else {
+                impactDiv.hidden = true;
+              }
+            } else { impactDiv.hidden = true; }
+          } else { impactDiv.hidden = true; }
+        } catch (e) { impactDiv.hidden = true; }
+      }
+
+      refreshExecState();
+    }
+
+    /* ── Debounced quote trigger ── */
+    var _triggerQuote = debounce(function () {
+      var raw = fromInput ? fromInput.value.trim() : '';
+      var n   = parseFloat(raw);
+      var ch  = chain();
+
+      if (!raw || isNaN(n) || n <= 0 || !S.fromAddress || !S.toAddress) {
+        resetOutput(); return;
+      }
+      if (S.fromAddress === S.toAddress) { resetOutput(); return; }
+
+      var amtBN;
+      try { amtBN = ethers.utils.parseUnits(raw, fromDec()); }
+      catch (e) { resetOutput(); return; }
+
+      var swapIn  = toERC20Addr(S.fromAddress, ch);
+      var swapOut = toERC20Addr(S.toAddress,   ch);
+
+      _quoting = true;
+      _qtId++;
+      var myId = _qtId;
+      refreshExecState();
+
+      getQuote(swapIn, swapOut, amtBN, ch)
+        .then(function (result) {
+          if (myId !== _qtId) return;
+          _quoting = false;
+          if (result) {
+            renderQuote(result, raw);
+          } else {
+            _quote = null;
+            resetOutput();
+          }
+        })
+        .catch(function () {
+          if (myId !== _qtId) return;
+          _quoting = false;
+          _quote = null;
+          resetOutput();
+        });
+    }, 500);
+
+    /* ── Show/hide full card vs success/error ── */
+    function _showCard() {
+      if (cardEl)    cardEl.hidden    = false;
+      if (chipsWrap) chipsWrap.hidden = false;
+      if (pctRow)    pctRow.hidden    = false;
+      if (successDiv) successDiv.hidden = true;
+      if (errorDiv)   errorDiv.hidden   = true;
+    }
+
+    function _hideCard() {
+      if (cardEl)    cardEl.hidden    = true;
+      if (chipsWrap) chipsWrap.hidden = true;
+      if (pctRow)    pctRow.hidden    = true;
+    }
+
+    /* ── Success state ── */
+    function showSuccess(hash, ch, fm, tm, fromAmt, toAmt) {
+      _hideCard();
+      if (!successDiv) return;
+
+      var sub = successDiv.querySelector('#success-sublabel');
+      var hsh = successDiv.querySelector('#success-hash');
+      var lnk = successDiv.querySelector('#success-etherscan');
+      var agn = successDiv.querySelector('#swap-again');
+      var cl  = successDiv.querySelector('.check-line');
+
+      /* Reset check animation */
+      if (cl) { cl.style.transition = 'none'; cl.style.strokeDashoffset = '52'; }
+
+      if (sub) sub.textContent =
+        fromAmt + '\u2009' + (fm ? fm.symbol : '') +
+        '\u2009\u2192\u2009' +
+        toAmt + '\u2009' + (tm ? tm.symbol : '');
+
+      if (hsh) hsh.textContent = hash
+        ? hash.slice(0, 20) + '\u2026' + hash.slice(-8)
+        : '';
+
+      if (lnk && hash) {
+        lnk.href = (EXPLORER_TX[ch] || 'https://etherscan.io/tx/') + hash;
+        setTimeout(function () { lnk.classList.add('visible'); }, 700);
+      }
+
+      if (agn) {
+        agn.classList.add('visible');
+        agn.onclick = function () {
+          if (lnk) lnk.classList.remove('visible');
+          if (agn) agn.classList.remove('visible');
+          successDiv.hidden = true;
+          fromInput && (fromInput.value = '');
+          _quote   = null;
+          _quoting = false;
+          _impactConfirmed = false;
+          _showCard();
+          resetOutput();
+          refreshBals();
+        };
+      }
+
+      successDiv.hidden = false;
+
+      /* Animate checkmark */
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          if (!cl) return;
+          cl.style.transition = 'stroke-dashoffset 520ms var(--ease-spr)';
+          cl.style.strokeDashoffset = '0';
+        });
       });
     }
 
-    /* ── Cancel any in-flight Dutch Auction poll ── */
-    function cancelPoll() {
-      if (_pollCancel) { _pollCancel(); _pollCancel = null; }
-    }
-
-    /* ── Clear gas + routing meta elements ── */
-    function clearMeta() {
-      if (gasEl)     gasEl.textContent = '';
-      if (routingEl) { routingEl.hidden = true; routingEl.textContent = ''; }
-    }
-
-    /* ── Reset exec button to base state ── */
-    function resetExecBtn(label) {
-      _confirming = false;
-      clearTimeout(_confirmTmr);
-      executeBtn.classList.remove('confirm', 'confirming');
-      if (execLabel) execLabel.textContent = label || 'EXECUTE SWAP';
-    }
-
-    /* ── Set exec button label based on connection + mock state ── */
-    function updateExecLabel(impact) {
-      resetExecBtn();
-      if (!window.STATE || !STATE.connected) {
-        /* Wallet not connected — prompt it */
-        if (execLabel) execLabel.textContent = 'CONNECT WALLET';
-      } else if (_isMock) {
-        /* Connected but Trading API unavailable — lock, explain */
-        if (execLabel) execLabel.textContent = 'NETWORK UNAVAILABLE';
-        executeBtn.disabled = true;
-      } else if (impact !== null && impact > 5 && !(window.STATE && STATE.settings.expertMode)) {
-        if (execLabel) execLabel.textContent = 'EXECUTE SWAP (' + impact.toFixed(1) + '% IMPACT)';
-      } else {
-        if (execLabel) execLabel.textContent = 'EXECUTE SWAP';
-      }
-    }
-
-    /* ── Render a resolved quote into the card ── */
-    function showQuoteResult(amountOutNum, impact, fromTok, toTok) {
-      toAmountEl.classList.remove('quoting');
-      toAmountEl.style.transition = 'opacity 60ms var(--ease-in)';
-      toAmountEl.style.opacity    = '0';
-      setTimeout(function () {
-        toAmountEl.textContent      = fmtAmount(amountOutNum);
-        toAmountEl.classList.add('has-value');
-        toAmountEl.style.opacity    = '1';
-        toAmountEl.style.transition = 'opacity 120ms var(--ease-out)';
-      }, 60);
-
-      /* Rate line — no fee, pure spot */
-      var p  = prices();
-      var fp = p[priceKey(S.fromAddress)];
-      var tp = p[priceKey(S.toAddress)];
-      if (fp && tp) {
-        rateEl.textContent = '1 ' + fromTok.symbol + ' \u2248 ' +
-          fmtAmount(fp.usd / tp.usd) + ' ' + toTok.symbol;
-        rateEl.classList.add('has-rate');
-      }
-
-      /* Price impact */
-      if (impact !== null && impact > 1) {
-        impactEl.hidden = false;
-        impactVal.textContent = impact.toFixed(2) + '%';
-        impactEl.classList.toggle('high', impact > 5);
-      } else {
-        impactEl.hidden = true;
-        impactEl.classList.remove('high');
-      }
-
-      executeBtn.disabled = false;
-      updateExecLabel(impact);
-    }
-
-    /* ── Async quote on every input change ── */
-    async function updateOutput() {
-      var raw = fromInput ? fromInput.value.trim() : '';
-      var val = raw.replace(/\.$/, '');
-
-      if (!val || isNaN(parseFloat(val)) || parseFloat(val) <= 0) {
-        toAmountEl.textContent = '\u2014';
-        toAmountEl.classList.remove('has-value', 'quoting');
-        toAmountEl.style.opacity = '1';
-        rateEl.textContent = '\u2014';
-        rateEl.classList.remove('has-rate');
-        impactEl.hidden = true;
-        clearMeta();
-        executeBtn.disabled = true;
-        _lastQuote = null;
-        _isMock    = false;
-        resetExecBtn();
-        return;
-      }
-
-      var fromTok = getToken(S.fromAddress);
-      var toTok   = getToken(S.toAddress);
-      if (!fromTok || !toTok) return;
-
-      /* Parse — guard against excess decimals (e.g. USDC = 6) */
-      var amountInBN;
-      try {
-        amountInBN = ethers.utils.parseUnits(val, fromTok.decimals);
-      } catch (_) {
-        var dot = val.indexOf('.');
-        if (dot !== -1) val = val.slice(0, dot + 1 + fromTok.decimals);
-        if (fromInput) fromInput.value = val;
-        try { amountInBN = ethers.utils.parseUnits(val, fromTok.decimals); }
-        catch (__) { return; }
-      }
-
-      toAmountEl.classList.add('quoting');
-      toAmountEl.style.opacity = '0.35';
-
-      var seq = ++_quoteSeq;
-
-      try {
-        /* Display quote — use wallet if connected, placeholder if not */
-        var displayWallet = (window.STATE && STATE.wallet) ? STATE.wallet : null;
-        var quoteResponse = await getQuote(S.fromAddress, S.toAddress, amountInBN, displayWallet);
-        if (seq !== _quoteSeq) return; /* stale — newer in flight */
-
-        /* Extract amountOut */
-        var rawOut = extractAmountOut(quoteResponse);
-        if (!rawOut || rawOut === '0') throw new Error('No output amount in quote');
-
-        var amountOutBN  = ethers.BigNumber.from(rawOut);
-        var amountOutNum = parseFloat(ethers.utils.formatUnits(amountOutBN, toTok.decimals));
-        var impact       = calcPriceImpact(amountInBN, amountOutBN,
-                             S.fromAddress, S.toAddress,
-                             fromTok.decimals, toTok.decimals);
-
-        _lastQuote = {
-          quoteResponse: quoteResponse,
-          amountInBN:    amountInBN,
-          amountOutBN:   amountOutBN,
-          impact:        impact
+    /* ── Error state ── */
+    function showSwapError(msg) {
+      _hideCard();
+      if (!errorDiv) return;
+      if (errorLabel) errorLabel.textContent = msg || 'SWAP FAILED';
+      var retry = errorDiv.querySelector('#swap-retry');
+      if (retry) {
+        retry.onclick = function () {
+          errorDiv.hidden = true;
+          _impactConfirmed = false;
+          _showCard();
+          refreshExecState();
         };
-        _isMock = false;
-
-        /* Gas display — revealed after quote resolves */
-        var gasUSD = extractGasUSD(quoteResponse);
-        if (gasEl) {
-          gasEl.textContent = gasUSD
-            ? 'Gas \u00b7 ~$' + parseFloat(gasUSD).toFixed(2)
-            : '';
-        }
-
-        /* UniswapX routing tag */
-        var dutch = isDutchRoute(quoteResponse.routing);
-        if (routingEl) {
-          routingEl.hidden      = !dutch;
-          routingEl.textContent = dutch ? 'via UniswapX' : '';
-        }
-
-        showQuoteResult(amountOutNum, impact, fromTok, toTok);
-
-      } catch (_err) {
-        if (seq !== _quoteSeq) return;
-
-        /* API unavailable — show real failure, no mock fallback */
-        _lastQuote = null;
-        _isMock    = true;
-        toAmountEl.classList.remove('quoting');
-        toAmountEl.style.opacity = '1';
-        clearMeta();
-        executeBtn.disabled = true;
-        updateExecLabel(null);
-        console.error('[swap.js] Quote failed:', _err);
       }
+      errorDiv.hidden = false;
     }
 
-    /* ── Input event: sanitize + debounce ── */
+    /* ═══ Event listeners ═══ */
+
+    /* FROM input */
     if (fromInput) {
       fromInput.addEventListener('input', function () {
-        var v     = fromInput.value.replace(/[^\d.]/g, '');
-        var parts = v.split('.');
-        if (parts.length > 2) v = parts[0] + '.' + parts.slice(1).join('');
-        if (v !== fromInput.value) fromInput.value = v;
-
-        _lastQuote = null;
-        _isMock    = false;
-        executeBtn.disabled = true;
-
-        clearTimeout(_debounce);
-        _debounce = setTimeout(updateOutput, 300);
-      });
-      fromInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { clearTimeout(_debounce); updateOutput(); }
+        _impactConfirmed = false;
+        resetOutput();
+        _triggerQuote();
       });
     }
 
-    /* ── Token selectors ── */
-    function openFor(side) { S.pickerTarget = side; openTokenPicker(); }
+    /* PCT buttons */
+    if (pctRow) {
+      pctRow.addEventListener('click', function (e) {
+        var btn = e.target.closest('.swap-pct-btn');
+        if (!btn) return;
+        var pct   = Number(btn.getAttribute('data-pct'));
+        var ch    = chain();
+        var bals  = window.STATE && STATE.portfolioBalances && STATE.portfolioBalances[ch];
+        var entry = bals && bals[S.fromAddress];
+        if (!entry || entry.balance == null) return;
 
-    var fromSel = container.querySelector('#from-selector');
-    var toSel   = container.querySelector('#to-selector');
+        var bal = parseFloat(entry.balance);
+        if (!bal || isNaN(bal)) return;
 
-    if (fromSel) {
-      fromSel.addEventListener('click', function () { openFor('from'); });
-      fromSel.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openFor('from'); }
+        var amt;
+        if (pct === 100 && isNative(S.fromAddress)) {
+          /* Reserve gas buffer from MAX */
+          try {
+            var balBN = ethers.utils.parseEther(
+              parseFloat(bal).toFixed(18).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '.0')
+            );
+            var maxBN = balBN.sub(NATIVE_GAS_RESERVE);
+            amt = maxBN.lte(0) ? 0 : parseFloat(ethers.utils.formatEther(maxBN));
+          } catch (e2) { amt = Math.max(0, bal - 0.0025); }
+        } else {
+          amt = bal * pct / 100;
+        }
+
+        if (!amt || amt <= 0) return;
+        var dec = fromDec();
+        fromInput.value = parseFloat(amt.toFixed(Math.min(dec, 8))).toString();
+        fromInput.dispatchEvent(new Event('input'));
       });
     }
-    if (toSel) {
-      toSel.addEventListener('click', function () { openFor('to'); });
-      toSel.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openFor('to'); }
-      });
-    }
 
-    /* ── Direction flip ── */
+    /* Direction flip */
     if (dirBtn) {
       dirBtn.addEventListener('click', function () {
         var tmp       = S.fromAddress;
-        S.fromAddress = S.toAddress;
+        S.fromAddress = S.toAddress || 'NATIVE';
         S.toAddress   = tmp;
-
-        _rotation += 180;
-        dirBtn.style.transition = 'transform 300ms var(--ease-spr)';
-        dirBtn.style.transform  = 'rotate(' + _rotation + 'deg)';
-
-        var prevOut = toAmountEl.textContent.replace(/[^0-9.]/g, '');
-        if (fromInput && prevOut && !isNaN(parseFloat(prevOut))) {
-          fromInput.value = prevOut;
-        }
-
-        refreshCardSelectors(container);
-        refreshCardBalances(container);
-        cancelPoll();
-        _lastQuote = null;
-        _isMock    = false;
-        executeBtn.disabled = true;
-        clearMeta();
-        resetExecBtn();
-        clearTimeout(_debounce);
-        _debounce = setTimeout(updateOutput, 60);
-      });
-    }
-
-    /* ── Success animation ── */
-    function playSuccess(txHash) {
-      swapCard.hidden = true;
-      swapSucc.hidden = false;
-
-      var line = swapSucc.querySelector('.check-line');
-      if (line) {
-        requestAnimationFrame(function () {
-          line.style.transition       = 'stroke-dashoffset 380ms var(--ease-out)';
-          line.style.strokeDashoffset = '0';
-        });
-      }
-
-      var hashEl = swapSucc.querySelector('#success-hash');
-      if (hashEl) {
-        hashEl.textContent = '';
-        var chars = txHash.split('');
-        var idx   = 0;
-        var tw    = setInterval(function () {
-          if (idx >= chars.length) { clearInterval(tw); return; }
-          hashEl.textContent += chars[idx++];
-        }, 18);
-      }
-
-      setTimeout(function () {
-        var ethEl   = swapSucc.querySelector('#success-etherscan');
-        var againEl = swapSucc.querySelector('#swap-again');
-        if (ethEl) {
-          ethEl.href   = 'https://etherscan.io/tx/' + txHash;
-          ethEl.hidden = false;
-          requestAnimationFrame(function () { ethEl.classList.add('visible'); });
-        }
-        setTimeout(function () {
-          if (againEl) {
-            againEl.hidden = false;
-            requestAnimationFrame(function () { againEl.classList.add('visible'); });
-          }
-        }, 120);
-      }, txHash.length * 18 + 240);
-    }
-
-    /* ── Execute button ── */
-    if (executeBtn) {
-      executeBtn.addEventListener('click', function () {
-        if (executeBtn.disabled) return;
-
-        /* Wallet not connected → open sheet */
-        if (!window.STATE || !STATE.connected) {
-          if (typeof openWalletSheet === 'function') openWalletSheet();
-          else if (typeof showToast  === 'function') showToast('Connect your wallet to swap', 'tok');
-          return;
-        }
-
-        /* Trading API failed — no valid quote. Lock execute. */
-        if (_isMock || !_lastQuote) return;
-
-        var impact     = _lastQuote.impact;
-        var expertMode = window.STATE && STATE.settings.expertMode;
-
-        /* Two-click high-impact gate */
-        if (impact !== null && impact > 5 && !expertMode && !_confirming) {
-          _confirming = true;
-          executeBtn.classList.add('confirm');
-          if (execLabel) execLabel.textContent = 'CONFIRM (' + impact.toFixed(1) + '% IMPACT)';
-          _confirmTmr = setTimeout(function () {
-            _confirming = false;
-            executeBtn.classList.remove('confirm');
-            updateExecLabel(impact);
-          }, 2000);
-          return;
-        }
-
-        /* All gates passed — disable immediately, prevent double-fire */
-        executeBtn.disabled = true;
-        executeBtn.classList.remove('confirm');
-        executeBtn.classList.add('confirming');
-        if (execLabel) execLabel.textContent = 'CONFIRMING\u2026';
-
-        var fromTok    = getToken(S.fromAddress);
-        var toTok      = getToken(S.toAddress);
-        var fromAmount = fromInput ? fromInput.value.trim() : '0';
-
-        executeSwap(
-          _lastQuote.quoteResponse,
-          S.fromAddress,
-          _lastQuote.amountInBN,
-          fromTok,
-          toTok,
-          fromAmount,
-          {
-            onApproving: function () {
-              /* Button already disabled above — update label only */
-              if (execLabel) execLabel.textContent = 'APPROVING\u2026';
-            },
-            onConfirming: function () {
-              if (execLabel) execLabel.textContent = 'CONFIRMING\u2026';
-            },
-            onPollStarted: function (handle) {
-              /* Store cancel fn — lets Swap Again abort the Dutch poll */
-              _pollCancel = handle.cancel;
-            },
-            onSuccess: function (txHash) {
-              _pollCancel = null;
-              playSuccess(txHash);
-            },
-            onError: function (err) {
-              _pollCancel = null;
-              executeBtn.disabled = false;
-              executeBtn.classList.remove('confirming', 'confirm');
-              _confirming = false;
-
-              var msg = (err && err.code === 4001)
-                ? 'Transaction rejected'
-                : (err && err.message) || 'Swap failed \u2014 try again';
-              if (typeof showToast === 'function') showToast(msg, 'terr');
-
-              updateExecLabel(_lastQuote ? _lastQuote.impact : null);
-
-              if (swapCard) {
-                swapCard.classList.add('shake');
-                setTimeout(function () { swapCard.classList.remove('shake'); }, 400);
-              }
-            }
-          }
-        );
-      });
-    }
-
-    /* ── Swap Again ── */
-    var swapAgain = swapSucc ? swapSucc.querySelector('#swap-again') : null;
-    if (swapAgain) {
-      swapAgain.addEventListener('click', function () {
-        /* Cancel any in-flight Dutch poll before resetting */
-        cancelPoll();
-
-        var line  = swapSucc.querySelector('.check-line');
-        var ethEl = swapSucc.querySelector('#success-etherscan');
-        var ag    = swapSucc.querySelector('#swap-again');
-        if (line)  line.style.strokeDashoffset = '52';
-        if (ethEl) { ethEl.classList.remove('visible'); ethEl.hidden = true; }
-        if (ag)    { ag.classList.remove('visible');    ag.hidden    = true; }
-
-        swapSucc.hidden = true;
-        swapCard.hidden = false;
-
+        _impactConfirmed = false;
         if (fromInput) fromInput.value = '';
-        toAmountEl.textContent = '\u2014';
-        toAmountEl.classList.remove('has-value', 'quoting');
-        toAmountEl.style.opacity = '1';
-        rateEl.textContent = '\u2014';
-        rateEl.classList.remove('has-rate');
-        impactEl.hidden = true;
-        clearMeta();
-        _lastQuote  = null;
-        _isMock     = false;
-        _confirming = false;
-        executeBtn.disabled = true;
-        resetExecBtn();
-
-        if (fromInput) setTimeout(function () { fromInput.focus(); }, 80);
+        refreshCardSelectors(container);
+        refreshBals();
+        resetOutput();
       });
     }
-  }
 
-  /* ════════════════════════════════════════════════════════
-     CARD STATE HELPERS — unchanged
-  ════════════════════════════════════════════════════════ */
-  function refreshCardSelectors(container) {
-    ['from', 'to'].forEach(function (side) {
-      var addr  = side === 'from' ? S.fromAddress : S.toAddress;
-      var token = getToken(addr);
-      if (!token) return;
-      var img      = container.querySelector('#' + side + '-logo');
-      var fallback = img && img.nextElementSibling;
-      var sym      = container.querySelector('#' + side + '-symbol');
-      if (img) {
-        img.src           = logoUrl(token.address);
-        img.alt           = token.symbol;
-        img.style.display = '';
-        if (fallback) fallback.style.display = 'none';
-        logoFallback(img, fallback, token.symbol);
-      }
-      if (sym) sym.textContent = token.symbol;
-    });
-  }
-
-  function refreshCardBalances(container) {
-    var p = prices();
-    ['from', 'to'].forEach(function (side) {
-      var addr  = side === 'from' ? S.fromAddress : S.toAddress;
-      var price = p[priceKey(addr)];
-      var el    = container.querySelector('#' + side + '-balance');
-      if (el) el.textContent = price ? 'Price \u00b7 ' + fmtPrice(price.usd) : 'Balance \u2014';
-    });
-  }
-
-  /* ════════════════════════════════════════════════════════
-     MOUNT SWAP CARD
-
-     Critical fixes vs Phase 9G:
-     1. No rebuild on view switch — check for .swap-view and return early.
-        Preserves quote state, selected tokens, typed amount across tabs.
-     2. Chain-aware defaults — S.fromAddress / S.toAddress must be valid
-        tokens for the ACTIVE chain's tokenList. The old Ethereum mainnet
-        hardcodes (WETH_ADDR / USDC_ADDR) fail on Arbitrum / BNB / etc.
-        because those addresses aren't in the chain's tokenList.
-        Addresses are updated here AND in S.* so updateOutput uses them.
-     3. Null guard — if tokenList isn't loaded yet, show skeleton and
-        wait for state:tokenList rather than calling buildSwapHTML(null, null)
-        which crashes immediately.
-  ════════════════════════════════════════════════════════ */
-  function mountSwapCard(container) {
-    if (!container) return;
-
-    /* ── Guard: already mounted — don't rebuild on every tab switch ──
-     * Only network changes force a remount (handled by state:network listener below). */
-    if (container.querySelector('.swap-view')) return;
-
-    var tList = tokenList();
-
-    /* ── Chain-aware default addresses ──
-     * S.fromAddress and S.toAddress may hold addresses that don't exist
-     * on the active chain (e.g. Ethereum WETH on Arbitrum). Validate
-     * and reset to actual tokens from the current chain's tokenList. */
-    if (!getToken(S.fromAddress)) {
-      /* Prefer the chain's native token (NATIVE) if available, else first in list */
-      var nativeToken = tList.find(function (t) { return t.address === 'NATIVE'; });
-      var firstToken  = tList[0];
-      S.fromAddress   = nativeToken ? 'NATIVE' : (firstToken ? firstToken.address : S.fromAddress);
+    /* Token selectors → open picker */
+    if (fromSel) {
+      fromSel.addEventListener('click', function () {
+        S.pickerTarget = 'from';
+        openTokenPicker();
+      });
     }
-    if (!getToken(S.toAddress) || S.toAddress === S.fromAddress) {
-      var altToken = tList.find(function (t) { return t.address !== S.fromAddress; });
-      if (altToken) S.toAddress = altToken.address;
+    if (toSel) {
+      toSel.addEventListener('click', function () {
+        S.pickerTarget = 'to';
+        openTokenPicker();
+      });
     }
 
-    /* ── Carry preToken from token panel → into FROM slot ── */
-    var preToken = window.STATE && STATE.token;
-    if (preToken && getToken(preToken)) {
-      if (preToken !== S.toAddress) {
-        S.fromAddress = preToken;
-      } else {
-        /* preToken is already TO — swap slots */
-        var tmp       = S.fromAddress;
-        S.fromAddress = S.toAddress;
-        S.toAddress   = tmp;
-      }
-      /* Final collision guard */
-      if (S.fromAddress === S.toAddress) {
-        var alt2 = tList.find(function (t) { return t.address !== S.fromAddress; });
-        if (alt2) S.toAddress = alt2.address;
-      }
+    /* Chain chips */
+    if (chipsWrap) {
+      chipsWrap.addEventListener('click', function (e) {
+        var chip = e.target.closest('.swap-chain-chip');
+        if (!chip) return;
+        var target = Number(chip.getAttribute('data-chain-id'));
+        if (target === chain()) return;
+
+        /* Dim all chips while the switch is pending */
+        chipsWrap.querySelectorAll('.swap-chain-chip').forEach(function (c) {
+          c.classList.add('switching');
+        });
+
+        switchNetwork(target).catch(function (err) {
+          /* Re-enable on failure */
+          chipsWrap.querySelectorAll('.swap-chain-chip').forEach(function (c) {
+            c.classList.remove('switching');
+          });
+          var m = CHAIN_META[target];
+          var label = m ? m.name : 'Network';
+          var msg = (err && err.code === 4001)
+            ? label + ' switch rejected'
+            : label + ' switch failed';
+          if (typeof showToast === 'function') showToast(msg, 'terr');
+        });
+        /* On success: state:network fires → remounts card automatically */
+      });
     }
 
-    var fromToken = getToken(S.fromAddress);
-    var toToken   = getToken(S.toAddress);
-
-    var SKELETON_HTML = [
-      '<div class="swap-view">',
-        '<div class="swap-skeleton">',
-          '<div class="skeleton swap-skel-slot"></div>',
-          '<div class="swap-skel-dir"></div>',
-          '<div class="skeleton swap-skel-slot"></div>',
-          '<div class="skeleton swap-skel-btn"></div>',
-        '</div>',
-      '</div>',
-    ].join('');
-
-    /* ── Token list not yet loaded — wait for it ── */
-    if (!fromToken || !toToken) {
-      container.innerHTML = SKELETON_HTML;
-
-      function _onList() {
-        document.removeEventListener('state:tokenList', _onList);
-        /* Clear so guard at top allows re-entry */
-        container.innerHTML = '';
-        /* Only remount if the container is still visible */
-        if (container.offsetParent !== null || !container.hidden) {
-          mountSwapCard(container);
+    /* Execute button */
+    if (execBtn) {
+      execBtn.addEventListener('click', function () {
+        /* Connect flow */
+        if (!window.STATE || !STATE.connected) {
+          if (typeof connect === 'function') connect();
+          return;
         }
+
+        if (!_quote) return;
+
+        /* High-impact: first click sets confirmed, second executes */
+        if (impactDiv && !impactDiv.hidden && impactDiv.classList.contains('high')) {
+          if (!_impactConfirmed) {
+            _impactConfirmed = true;
+            refreshExecState();
+            return;
+          }
+        }
+
+        var raw    = fromInput ? fromInput.value.trim() : '';
+        var ch     = chain();
+        var wallet = window.STATE && STATE.wallet;
+        var fm     = fromMeta();
+        var tm     = toMeta();
+
+        var amtBN;
+        try { amtBN = ethers.utils.parseUnits(raw, fromDec()); }
+        catch (e) { setExec('disabled', 'INVALID AMOUNT'); return; }
+
+        var signer;
+        try { signer = getSigner(); }
+        catch (e) { if (typeof connect === 'function') connect(); return; }
+
+        setExec('busy', 'APPROVING\u2026');
+
+        ensureApproval(S.fromAddress, amtBN, wallet, ch, signer, function (lbl) {
+          setExec('busy', lbl);
+        })
+        .then(function () {
+          setExec('busy', 'CONFIRM IN WALLET\u2026');
+          return executeSwapTx({
+            tokenInAddr:  S.fromAddress,
+            tokenOutAddr: S.toAddress,
+            amountIn:     amtBN,
+            quote:        _quote,
+            chainId:      ch,
+            signer:       signer,
+            wallet:       wallet,
+            slippage:     (window.STATE && STATE.settings && STATE.settings.slippage) || 0.5,
+          });
+        })
+        .then(function (tx) {
+          setExec('busy', 'PENDING\u2026');
+          return tx.wait().then(function (receipt) {
+            recordTrade({
+              fromMeta: fm,
+              toMeta:   tm,
+              fromAmt:  raw,
+              toAmt:    fmtBN(_quote.amountOut, toDec()),
+              hash:     receipt.transactionHash,
+              chainId:  ch,
+            });
+            return receipt;
+          });
+        })
+        .then(function (receipt) {
+          _impactConfirmed = false;
+          showSuccess(
+            receipt.transactionHash, ch,
+            fm, tm,
+            raw, fmtBN(_quote.amountOut, toDec())
+          );
+        })
+        .catch(function (err) {
+          _impactConfirmed = false;
+          var msg = parseEthError(err);
+          if (msg === 'REJECTED') {
+            /* Silent reject — reset button, stay on card */
+            refreshExecState();
+            return;
+          }
+          showSwapError(msg);
+        });
+      });
+    }
+
+    /* Balance refresh signal (dispatched on .swap-view by state:portfolioBalances) */
+    container.addEventListener('swap:refreshBals', function () { refreshBals(); });
+
+    /* Exec state refresh signal (dispatched on .swap-view by state:connected) */
+    container.addEventListener('swap:refreshExec', function () { refreshExecState(); });
+
+    /* ── Initial render ── */
+    refreshBals();
+    refreshExecState();
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     SELECTOR REFRESH — updates token logos + symbols in place
+  ═══════════════════════════════════════════════════════════ */
+
+  function refreshCardSelectors(container) {
+    var ch = (window.STATE && STATE.network) || 1;
+
+    function updateSlot(side, address) {
+      var meta   = getTokenMeta(address, ch);
+      if (!meta) return;
+      var symbol = meta.symbol || '?';
+      var src    = logoUrl(address, ch);
+
+      var logo  = container.querySelector('#' + side + '-logo');
+      var logofb = container.querySelector('#' + side + '-logo-fb');
+      var symEl = container.querySelector('#' + side + '-symbol');
+
+      if (logo) {
+        logo.src   = src;
+        logo.alt   = symbol;
+        logo.style.display = '';
+        logo.onerror = function () {
+          logo.style.display = 'none';
+          if (logofb) { logofb.textContent = symbol.charAt(0); logofb.style.display = 'flex'; }
+        };
       }
-      document.addEventListener('state:tokenList', _onList);
+      if (logofb) { logofb.textContent = symbol.charAt(0); logofb.style.display = 'none'; }
+      if (symEl)  symEl.textContent = symbol;
+    }
+
+    updateSlot('from', S.fromAddress);
+    if (S.toAddress) updateSlot('to', S.toAddress);
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     TOKEN PICKER — shared overlay, wired once at boot
+  ═══════════════════════════════════════════════════════════ */
+
+  function _pickerRowHTML(token, chainId) {
+    var addr   = token.address;
+    var symbol = token.symbol || '?';
+    var name   = token.name   || '';
+    var src    = esc(logoUrl(addr, chainId));
+
+    var priceEntry = window.STATE && STATE.prices &&
+                     STATE.prices[isNative(addr) ? toERC20Addr(addr, chainId) : addr];
+    var priceStr = (priceEntry && priceEntry.usd) ? fmtUsd(priceEntry.usd) : '';
+
+    return (
+      '<div class="token-picker-row" data-address="' + esc(addr) + '"' +
+          ' role="button" tabindex="0">' +
+        '<img class="picker-logo" src="' + src + '" alt="' + esc(symbol) + '"' +
+            ' onerror="this.style.display=\'none\';">' +
+        '<div class="picker-info">' +
+          '<span class="picker-symbol">' + esc(symbol) + '</span>' +
+          '<span class="picker-name">'   + esc(name)   + '</span>' +
+        '</div>' +
+        (priceStr ? '<span class="picker-price">' + esc(priceStr) + '</span>' : '') +
+      '</div>'
+    );
+  }
+
+  function _renderPickerList(query) {
+    var listEl = document.getElementById('token-picker-list');
+    if (!listEl) return;
+
+    var ch     = (window.STATE && STATE.network) || 1;
+    var native = CHAIN_NATIVE[ch] || CHAIN_NATIVE[1];
+    var list   = (window.STATE && STATE.tokenList) || [];
+    var tokens = [native].concat(list.filter(function (t) {
+      return t.address && t.address !== 'NATIVE';
+    }));
+
+    var q = (query || '').trim().toLowerCase();
+    if (q) {
+      tokens = tokens.filter(function (t) {
+        return (t.symbol  && t.symbol.toLowerCase().indexOf(q)  !== -1) ||
+               (t.name    && t.name.toLowerCase().indexOf(q)    !== -1) ||
+               (t.address && t.address.toLowerCase()            === q);
+      });
+    }
+
+    if (!tokens.length) {
+      listEl.innerHTML = '<div class="picker-empty">No tokens found</div>';
       return;
     }
 
-    /* ── Full build — skeleton → real card after paint ── */
-    container.innerHTML = SKELETON_HTML;
-
-    setTimeout(function () {
-      container.innerHTML = '<div class="swap-view">' + buildSwapHTML(fromToken, toToken) + '</div>';
-      wireCard(container);
-    }, 320);
-  }
-
-  /* ════════════════════════════════════════════════════════
-     TOKEN PICKER — unchanged
-  ════════════════════════════════════════════════════════ */
-  var pickerOverlay = document.getElementById('token-picker-overlay');
-  var pickerSearch  = document.getElementById('token-picker-search');
-  var pickerList    = document.getElementById('token-picker-list');
-
-  function buildPickerRow(token, isSelected) {
-    var price = prices()[token.address];
-    var div   = document.createElement('div');
-    div.className = 'picker-token-row' + (isSelected ? ' selected' : '');
-    div.setAttribute('role', 'button');
-    div.setAttribute('tabindex', isSelected ? '-1' : '0');
-    div.innerHTML =
-      '<img class="picker-token-logo" src="' + logoUrl(token.address) + '"' +
-      ' alt="' + token.symbol + '" width="28" height="28">' +
-      '<div class="picker-token-logo-fallback" style="display:none">' + token.symbol[0] + '</div>' +
-      '<div class="picker-token-info">' +
-        '<span class="picker-token-name">'   + token.name   + '</span>' +
-        '<span class="picker-token-symbol">' + token.symbol + '</span>' +
-      '</div>' +
-      (price ? '<span class="picker-token-price">' + fmtPrice(price.usd) + '</span>' : '');
-
-    logoFallback(
-      div.querySelector('.picker-token-logo'),
-      div.querySelector('.picker-token-logo-fallback'),
-      token.symbol
-    );
-
-    if (!isSelected) {
-      function pick() {
-        var side  = S.pickerTarget;
-        var prev  = side === 'from' ? S.fromAddress : S.toAddress;
-        var other = side === 'from' ? S.toAddress   : S.fromAddress;
-        if (token.address === other) {
-          if (side === 'from') { S.fromAddress = token.address; S.toAddress   = prev; }
-          else                 { S.toAddress   = token.address; S.fromAddress = prev; }
-        } else {
-          if (side === 'from') S.fromAddress = token.address;
-          else                 S.toAddress   = token.address;
-        }
-        closeTokenPicker();
-        refreshAllCards();
-      }
-      div.addEventListener('click', pick);
-      div.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); }
-      });
-    }
-    return div;
-  }
-
-  function renderPickerList(query) {
-    if (!pickerList) return;
-    pickerList.innerHTML = '';
-    var lower    = query.toLowerCase().trim();
-    var filtered = lower ? tokenList().filter(function (t) {
-      /* Match on symbol, name, or partial address */
-      return t.symbol.toLowerCase().indexOf(lower)  > -1 ||
-             t.name.toLowerCase().indexOf(lower)    > -1 ||
-             t.address.toLowerCase().indexOf(lower) > -1;
-    }) : tokenList();
-
-    filtered.forEach(function (t) {
-      var isCurrent = (S.pickerTarget === 'from')
-        ? t.address === S.fromAddress
-        : t.address === S.toAddress;
-      pickerList.appendChild(buildPickerRow(t, isCurrent));
-    });
-
-    if (!filtered.length) {
-      /* Contract address entered — attempt ERC20 on-chain lookup.
-       * The regex matches a full 42-character 0x address.
-       * We capture the query at call time and guard the async result
-       * so a stale response never overwrites a newer search. */
-      var trimmed = query.trim();
-      if (window.TOKENS && /^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
-        pickerList.innerHTML =
-          '<div class="token-list-empty">' +
-          '<span class="token-list-empty-label">Looking up address\u2026</span>' +
-          '</div>';
-
-        window.TOKENS.lookupByAddress(trimmed).then(function (token) {
-          /* Guard: user may have changed the search input while we were waiting */
-          if (!pickerSearch || pickerSearch.value.trim() !== trimmed) return;
-
-          if (!token) {
-            pickerList.innerHTML =
-              '<div class="token-list-empty">' +
-              '<span class="token-list-empty-label">No ERC-20 token found at this address.</span>' +
-              '</div>';
-            return;
-          }
-
-          pickerList.innerHTML = '';
-          var isCurrent = (S.pickerTarget === 'from')
-            ? token.address === S.fromAddress
-            : token.address === S.toAddress;
-          pickerList.appendChild(buildPickerRow(token, isCurrent));
-        }).catch(function () {
-          if (!pickerSearch || pickerSearch.value.trim() !== trimmed) return;
-          pickerList.innerHTML =
-            '<div class="token-list-empty">' +
-            '<span class="token-list-empty-label">Lookup failed. Check your connection.</span>' +
-            '</div>';
-        });
-        return;
-      }
-
-      /* No query typed — the list itself is empty.
-       * Show the right message based on why: loading, error, or no tokens on chain. */
-      if (!lower) {
-        var status = window.STATE && STATE.tokenListStatus;
-        var msg = status === 'error'   ? 'Failed to load tokens. Check your connection.'
-                : status === 'empty'   ? 'No tokens available on this network.'
-                :                        'Loading tokens\u2026';
-        pickerList.innerHTML =
-          '<div class="token-list-empty">' +
-          '<span class="token-list-empty-label">' + msg + '</span>' +
-          '</div>';
-        return;
-      }
-      pickerList.innerHTML =
-        '<div class="token-list-empty">' +
-        '<span class="token-list-empty-label">No results for \u201c' + query + '\u201d</span>' +
-        '</div>';
-    }
+    listEl.innerHTML = tokens.slice(0, 80).map(function (t) {
+      return _pickerRowHTML(t, ch);
+    }).join('');
   }
 
   function openTokenPicker() {
-    if (!pickerOverlay) return;
-    if (pickerSearch) pickerSearch.value = '';
-    renderPickerList('');
-    pickerOverlay.classList.add('open');
-    if (pickerSearch) setTimeout(function () { pickerSearch.focus(); }, 140);
+    var overlay = document.getElementById('token-picker-overlay');
+    var inp     = document.getElementById('token-picker-search');
+    if (!overlay) return;
+
+    _renderPickerList('');
+    overlay.classList.add('open');
+
+    var picker = overlay.querySelector('.token-picker');
+    if (picker) {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          picker.style.transform = 'translateY(0) scale(1)';
+          picker.style.opacity   = '1';
+        });
+      });
+    }
+    setTimeout(function () { inp && inp.focus(); }, 160);
   }
 
   function closeTokenPicker() {
-    if (!pickerOverlay) return;
-    pickerOverlay.classList.remove('open');
-    if (pickerSearch) pickerSearch.value = '';
+    var overlay = document.getElementById('token-picker-overlay');
+    if (!overlay) return;
+    overlay.classList.remove('open');
+    var picker = overlay.querySelector('.token-picker');
+    if (picker) { picker.style.transform = ''; picker.style.opacity = ''; }
+    var inp = document.getElementById('token-picker-search');
+    if (inp) inp.value = '';
   }
 
-  if (pickerOverlay) {
-    pickerOverlay.addEventListener('click', function (e) {
-      if (e.target === pickerOverlay) closeTokenPicker();
+  function wireTokenPicker() {
+    var overlay = document.getElementById('token-picker-overlay');
+    var searchInp = document.getElementById('token-picker-search');
+    var listEl    = document.getElementById('token-picker-list');
+    if (!overlay) return;
+
+    /* Backdrop close */
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) closeTokenPicker();
     });
-    pickerOverlay.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') closeTokenPicker();
-    });
-  }
 
-  if (pickerSearch) {
-    pickerSearch.addEventListener('input',   function ()  { renderPickerList(pickerSearch.value); });
-    pickerSearch.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeTokenPicker(); });
-  }
-
-  function refreshAllCards() {
-    [
-      document.getElementById('right-panel-content'),
-      document.getElementById('mobile-swap')
-    ].forEach(function (c) {
-      if (!c || !c.querySelector('.swap-view')) return;
-      refreshCardSelectors(c);
-      refreshCardBalances(c);
-      var inp = c.querySelector('#from-amount');
-      if (inp && inp.value) inp.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-  }
-
-  /* ════════════════════════════════════════════════════════
-     STATE EVENT LISTENERS
-  ════════════════════════════════════════════════════════ */
-  document.addEventListener('panel:render', function (e) {
-    var container = document.getElementById('right-panel-content');
-    if (e.detail === 'swap') {
-      if (container) mountSwapCard(container);
-    } else {
-      var old = container && container.querySelector('.swap-view');
-      if (old) old.parentNode.removeChild(old);
+    /* Search filter */
+    if (searchInp) {
+      searchInp.addEventListener('input', function () {
+        _renderPickerList(searchInp.value);
+      });
     }
+
+    /* Row selection */
+    if (listEl) {
+      listEl.addEventListener('click', function (e) {
+        var row = e.target.closest('.token-picker-row');
+        if (!row) return;
+        var addr = row.getAttribute('data-address');
+        if (!addr) return;
+
+        if (S.pickerTarget === 'from') {
+          if (addr === S.toAddress) S.toAddress = S.fromAddress;
+          S.fromAddress = addr;
+        } else {
+          if (addr === S.fromAddress) S.fromAddress = S.toAddress;
+          S.toAddress = addr;
+        }
+
+        closeTokenPicker();
+
+        /* Refresh all mounted swap cards */
+        ['right-panel-content', 'mobile-swap'].forEach(function (id) {
+          var outer = document.getElementById(id);
+          var view  = outer && outer.querySelector('.swap-view');
+          if (!view) return;
+          refreshCardSelectors(view);
+          /* Re-quote if FROM amount already set */
+          var inp = view.querySelector('#from-amount');
+          if (inp && parseFloat(inp.value) > 0) inp.dispatchEvent(new Event('input'));
+        });
+      });
+
+      listEl.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          var row = e.target.closest('.token-picker-row');
+          if (row) row.click();
+        }
+      });
+    }
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     MOUNT
+  ═══════════════════════════════════════════════════════════ */
+
+  function mountSwapCard(container) {
+    if (!container) return;
+
+    var ch   = (window.STATE && STATE.network) || 1;
+    var list = (window.STATE && STATE.tokenList) || [];
+
+    /* Carry STATE.token as FROM preselection (from token detail panel) */
+    var preToken = window.STATE && STATE.token;
+    if (preToken && preToken !== 'NATIVE' && getTokenMeta(preToken, ch)) {
+      if (preToken.toLowerCase() !== (S.toAddress || '').toLowerCase()) {
+        S.fromAddress = preToken;
+      } else {
+        /* Pretoken is already in TO — put it in FROM, pick default TO */
+        S.fromAddress = preToken;
+        S.toAddress   = null;
+      }
+    }
+
+    /* Default FROM: native */
+    if (!S.fromAddress) S.fromAddress = 'NATIVE';
+
+    /* Default TO: first ERC-20 that isn't WETH or FROM */
+    if (!S.toAddress) {
+      var wch = WETH[ch] ? WETH[ch].toLowerCase() : '';
+      var frL = S.fromAddress.toLowerCase();
+      var first = list.find(function (t) {
+        var al = (t.address || '').toLowerCase();
+        return t.address && al !== 'native' && al !== wch && al !== frL;
+      });
+      S.toAddress = first ? first.address : (USDC[ch] || null);
+    }
+
+    var fromMeta = getTokenMeta(S.fromAddress, ch);
+    var toMeta   = S.toAddress ? getTokenMeta(S.toAddress, ch) : null;
+
+    container.innerHTML =
+      '<div class="swap-view">' +
+        buildSwapHTML(fromMeta, toMeta, ch) +
+      '</div>';
+
+    var view = container.querySelector('.swap-view');
+    wireCard(view);
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     STATE LISTENERS
+  ═══════════════════════════════════════════════════════════ */
+
+  /* Desktop right panel */
+  document.addEventListener('panel:render', function (e) {
+    if (e.detail !== 'swap') return;
+    var el = document.getElementById('right-panel-content');
+    if (el) mountSwapCard(el);
   });
 
+  /* Mobile swap tab */
   document.addEventListener('state:mobileView', function (e) {
     if (e.detail !== 'swap') return;
-    var container = document.getElementById('mobile-swap');
-    if (container) mountSwapCard(container);
+    var el = document.getElementById('mobile-swap');
+    if (el) mountSwapCard(el);
   });
 
-  /* Network changed — reset S.* so the new chain gets proper token defaults,
-   * then force a remount of any currently-visible swap card. */
+  /* Network change — reset to native and remount */
   document.addEventListener('state:network', function () {
-    S.fromAddress  = WETH_ADDR;   /* mountSwapCard's chain-aware logic will override */
-    S.toAddress    = USDC_ADDR;
-    S.pickerTarget = null;
-
-    [
-      document.getElementById('right-panel-content'),
-      document.getElementById('mobile-swap'),
-    ].forEach(function (c) {
-      if (!c || !c.querySelector('.swap-view')) return;
-      c.innerHTML = ''; /* Clear so mountSwapCard guard allows re-entry */
-      var isMobileSwap  = c.id === 'mobile-swap'         && window.STATE && STATE.mobileTab  === 'swap';
-      var isDesktopSwap = c.id === 'right-panel-content' && window.STATE && STATE.rightPanel === 'swap';
-      if (isMobileSwap || isDesktopSwap) mountSwapCard(c);
+    S.fromAddress = 'NATIVE';
+    S.toAddress   = null;
+    ['right-panel-content', 'mobile-swap'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el && el.querySelector('.swap-view')) mountSwapCard(el);
     });
   });
 
+  /* Prices refreshed — re-quote to update price impact */
   document.addEventListener('state:prices', function () {
-    [
-      document.getElementById('right-panel-content'),
-      document.getElementById('mobile-swap')
-    ].forEach(function (c) {
-      if (!c || !c.querySelector('.swap-view')) return;
-      refreshCardBalances(c);
+    ['right-panel-content', 'mobile-swap'].forEach(function (id) {
+      var el   = document.getElementById(id);
+      var view = el && el.querySelector('.swap-view');
+      if (!view) return;
+      var inp = view.querySelector('#from-amount');
+      if (inp && parseFloat(inp.value) > 0) inp.dispatchEvent(new Event('input'));
     });
   });
+
+  /* Portfolio balances updated — refresh balance lines */
+  document.addEventListener('state:portfolioBalances', function () {
+    ['right-panel-content', 'mobile-swap'].forEach(function (id) {
+      var el   = document.getElementById(id);
+      var view = el && el.querySelector('.swap-view');
+      if (view) view.dispatchEvent(new CustomEvent('swap:refreshBals'));
+    });
+  });
+
+  /* Connection state changed — refresh exec button */
+  document.addEventListener('state:connected', function () {
+    ['right-panel-content', 'mobile-swap'].forEach(function (id) {
+      var el   = document.getElementById(id);
+      var view = el && el.querySelector('.swap-view');
+      if (!view) return;
+      var execBtn = view.querySelector('#swap-execute');
+      if (execBtn) execBtn.dispatchEvent(new CustomEvent('swap:refreshExec'));
+    });
+  });
+
+  /* ── Boot ── */
+  wireTokenPicker();
 
 }());
