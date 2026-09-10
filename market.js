@@ -1,22 +1,24 @@
 /* ═══════════════════════════════════════════════════════════
    OBSIDEUM — market.js
-   Standalone market data layer. Completely decoupled from the
-   wallet/DEX layer (prices.js, STATE.tokenList, STATE.network).
+   Single price authority for all user-facing price displays.
+   Fetches CoinGecko /coins/markets per chain.
 
-   Fetches CoinGecko /coins/markets per chain, stores results
-   in STATE.marketData[chainId]. Dispatches state:marketData
-   on every update so explore.js re-renders live.
+   Writes to TWO state keys:
+     STATE.prices[address]        — read by portfolio.js, swap.js, token panel
+     STATE.marketData[chainId]    — read by explore.js only
 
-   Category IDs verified against:
-     /coins/categories/list endpoint + coingecko.com/en/categories/*
-   Platform IDs verified against:
-     /asset_platforms endpoint
-   Field names verified against:
-     /coins/markets OpenAPI spec — standard response (no optional params)
+   Both are updated via setState() so their respective
+   state:prices and state:marketData events fire correctly.
+   Direct STATE mutation is never used here — that was
+   the root cause of portfolio USD values staying at $0.00.
 
-   Free public API. No key required. Rate limit: ~30 req/min.
-   Stagger strategy: 400ms between chain fetches per cycle.
-   Poll interval: 60s — market data doesn't need to be faster.
+   API: CoinGecko free tier. No key. ~30 req/min.
+   Poll: 60s, staggered 400ms per chain.
+
+   Category IDs verified Sep 2026:
+     coingecko.com/en/categories/<slug>
+   Platform IDs verified Sep 2026:
+     CoinGecko /asset_platforms endpoint
 
    UNCHAINED9. Built by Waeven Xrysmond.
 ═══════════════════════════════════════════════════════════ */
@@ -26,20 +28,19 @@
 
   /* ════════════════════════════════════════════════════════
      CHAIN → COINGECKO MAPPINGS
-     Verified against live CoinGecko endpoints Sep 2026.
+     All IDs verified against live CoinGecko endpoints.
   ════════════════════════════════════════════════════════ */
 
   /*
    * Category slug per chain — used in /coins/markets?category=
-   * Source: coingecko.com/en/categories/<slug>
-   * Null = chain too new for a dedicated category; falls back
-   * to a filtered global top-100 without a category param.
+   * Verified from coingecko.com/en/categories/<slug> URLs.
+   * null = chain has no dedicated category yet; omit param.
    */
   var CHAIN_CATEGORY = {
     1:      'ethereum-ecosystem',
     10:     'optimism-ecosystem',
-    56:     'binance-smart-chain',   /* NOT 'bnb-chain' — verified from URL path */
-    130:    null,                    /* Unichain — too new, no category yet */
+    56:     'binance-smart-chain',  /* NOT 'bnb-chain' — verified from URL path */
+    130:    null,                   /* Unichain — no category yet */
     137:    'polygon-ecosystem',
     8453:   'base-ecosystem',
     42161:  'arbitrum-ecosystem',
@@ -48,8 +49,8 @@
 
   /*
    * Platform ID per chain — used in /coins/{id} platforms object
-   * for contract address resolution on token tap.
-   * Source: /asset_platforms endpoint
+   * for on-demand contract address resolution.
+   * Verified from CoinGecko /asset_platforms endpoint.
    */
   var CHAIN_PLATFORM = {
     1:      'ethereum',
@@ -64,8 +65,7 @@
 
   /*
    * CoinGecko coin ID of the native token per chain.
-   * These are assigned address = 'NATIVE' automatically
-   * so no extra API call is needed for them.
+   * Used to assign address = 'NATIVE' automatically.
    */
   var CHAIN_NATIVE_CGID = {
     1:      'ethereum',
@@ -80,9 +80,8 @@
 
   /*
    * Pre-resolved contract addresses for the most common tokens.
-   * Avoids an extra /coins/{id} call on tap for these.
+   * Avoids on-demand /coins/{id} fetch for these on token tap.
    * Shape: { coingecko_id: { chainId: address } }
-   * Addresses are checksummed ERC-20 format or 'NATIVE'.
    */
   var KNOWN_ADDRESSES = {
     'ethereum':          { 1:'NATIVE', 10:'NATIVE', 130:'NATIVE', 8453:'NATIVE', 42161:'NATIVE' },
@@ -108,15 +107,15 @@
 
   /* ════════════════════════════════════════════════════════
      ADDRESS RESOLUTION
-     Called by explore.js on token tap.
+     Used by explore.js on token tap when address is null.
      Priority:
-       1. KNOWN_ADDRESSES map (instant, no network)
-       2. STATE.tokenList cross-ref (instant, active chain only)
-       3. CoinGecko /coins/{id} (one fetch, cached on entry)
+       1. KNOWN_ADDRESSES (instant)
+       2. STATE.tokenList cross-ref by symbol (instant, active chain)
+       3. CoinGecko /coins/{id} fetch (async, cached on entry)
      Returns Promise<string|null>
   ════════════════════════════════════════════════════════ */
   function resolveAddress(entry, chainId) {
-    /* 1. Already resolved in a prior call */
+    /* 1. Already resolved */
     if (entry.address) return Promise.resolve(entry.address);
 
     /* 2. Known address map */
@@ -126,7 +125,7 @@
       return Promise.resolve(entry.address);
     }
 
-    /* 3. Cross-reference active chain's wallet tokenList */
+    /* 3. STATE.tokenList cross-ref (active chain only) */
     var activeChain = window.STATE && STATE.network;
     if (Number(chainId) === Number(activeChain)) {
       var tList = (window.STATE && STATE.tokenList) || [];
@@ -139,9 +138,7 @@
       }
     }
 
-    /* 4. On-demand CoinGecko /coins/{id} fetch
-     * Uses platforms object which maps platform ID → contract address.
-     * Field verified: data.platforms["ethereum"] = "0x..." */
+    /* 4. CoinGecko /coins/{id} — cache result on entry */
     var platform = CHAIN_PLATFORM[chainId];
     if (!platform) return Promise.resolve(null);
 
@@ -157,7 +154,7 @@
       })
       .then(function (data) {
         var addr = (data && data.platforms && data.platforms[platform]) || null;
-        if (addr) entry.address = addr; /* cache on entry object */
+        if (addr) entry.address = addr;
         return addr;
       })
       .catch(function (err) {
@@ -175,20 +172,16 @@
     if (_inFlight[chainId]) return;
     _inFlight[chainId] = true;
 
-    var category = CHAIN_CATEGORY[chainId] || null;
+    var category   = CHAIN_CATEGORY[chainId] || null;
+    var nativeCgId = CHAIN_NATIVE_CGID[chainId] || null;
 
     /*
      * /coins/markets endpoint.
-     * Fields used:
-     *   id, symbol, name, image          — always present
-     *   current_price                    — always present
-     *   price_change_percentage_24h      — always present (NO extra param needed)
-     *   total_volume, market_cap         — always present
-     *   market_cap_rank                  — always present
-     *
-     * NOTE: price_change_percentage_24h_in_currency is a DIFFERENT field
-     * only populated when ?price_change_percentage=24h is passed.
-     * We use price_change_percentage_24h — simpler, always there.
+     * Response field for 24h change: price_change_percentage_24h
+     * This field is ALWAYS present in the standard response.
+     * Do NOT use price_change_percentage_24h_in_currency —
+     * that is only populated when ?price_change_percentage=24h
+     * is explicitly passed. We omit that param intentionally.
      */
     var url = 'https://api.coingecko.com/api/v3/coins/markets'
       + '?vs_currency=usd'
@@ -202,7 +195,7 @@
       var res = await fetch(url, { headers: { Accept: 'application/json' } });
 
       if (res.status === 429) {
-        console.warn('[market.js] Rate limited on chain', chainId, '— retaining stale data');
+        console.warn('[market.js] Rate limited on chain', chainId, '— keeping stale data');
         return;
       }
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -210,8 +203,7 @@
       var coins = await res.json();
       if (!Array.isArray(coins)) throw new Error('Response is not an array');
 
-      var nativeCgId = CHAIN_NATIVE_CGID[chainId] || null;
-
+      /* ── Build token entries ── */
       var tokens = coins.map(function (c) {
         var addr = null;
         if (c.id === nativeCgId) {
@@ -220,25 +212,52 @@
           var k = KNOWN_ADDRESSES[c.id];
           if (k && k[chainId]) addr = k[chainId];
         }
-
         return {
           id:        c.id,
           symbol:    (c.symbol || '').toUpperCase(),
           name:      c.name   || '',
           image:     c.image  || '',
-          price:     typeof c.current_price             === 'number' ? c.current_price             : null,
+          price:     typeof c.current_price               === 'number' ? c.current_price               : null,
           change24h: typeof c.price_change_percentage_24h === 'number' ? c.price_change_percentage_24h : null,
-          volume24h: typeof c.total_volume              === 'number' ? c.total_volume              : null,
-          marketCap: typeof c.market_cap                === 'number' ? c.market_cap                : null,
+          volume24h: typeof c.total_volume                === 'number' ? c.total_volume                : null,
+          marketCap: typeof c.market_cap                  === 'number' ? c.market_cap                  : null,
           rank:      c.market_cap_rank || null,
           address:   addr,
         };
       });
 
-      /* Merge into STATE.marketData — preserve other chains */
+      var now = Math.floor(Date.now() / 1000);
+
+      /* ── Build STATE.prices update ──────────────────────────────
+       * Critical: use setState() not direct mutation.
+       * Direct mutation does not fire state:prices, so portfolio.js
+       * never calls updatePricesInRows() and USD values stay at $0.
+       * ──────────────────────────────────────────────────────── */
+      var pricesUpdate = {};
+      tokens.forEach(function (t) {
+        if (t.price === null) return;
+        var entry = { usd: t.price, change24h: t.change24h, updatedAt: now };
+        if (t.address === 'NATIVE') {
+          /* Native token: key is 'NATIVE_<chainId>' */
+          pricesUpdate['NATIVE_' + chainId] = entry;
+        } else if (t.address) {
+          /* ERC-20 token: key is checksummed contract address */
+          pricesUpdate[t.address] = entry;
+        }
+      });
+
+      /* Merge with existing prices (other chains, other tokens) */
+      var mergedPrices = Object.assign(
+        {},
+        (window.STATE && STATE.prices) || {},
+        pricesUpdate
+      );
+      setState({ prices: mergedPrices }); /* fires state:prices → portfolio.js updates */
+
+      /* ── Update STATE.marketData ─────────────────────────── */
       var current = Object.assign({}, (window.STATE && STATE.marketData) || {});
       current[chainId] = tokens;
-      setState({ marketData: current });
+      setState({ marketData: current }); /* fires state:marketData → explore.js updates */
 
     } catch (err) {
       console.warn('[market.js] fetchChain', chainId, 'failed:', err.message);
@@ -249,9 +268,9 @@
 
   /* ════════════════════════════════════════════════════════
      POLLING
-     Stagger: 400ms between chains to stay well within
-     the 30 req/min free tier limit.
-     (8 active chains × 1 req = 8 req per 60s cycle = safe)
+     400ms stagger between chains keeps well within
+     the 30 req/min CoinGecko free tier limit.
+     (8 active chains × 1 req = 8 req per 60s cycle — safe)
   ════════════════════════════════════════════════════════ */
   var _pollTimer = null;
 
@@ -274,10 +293,9 @@
 
   /* ════════════════════════════════════════════════════════
      GLOBALS
-     resolveAddress exposed so explore.js can call it on tap.
   ════════════════════════════════════════════════════════ */
   window.resolveMarketAddress = resolveAddress;
-  window.CHAIN_PLATFORM_IDS   = CHAIN_PLATFORM; /* spare reference */
+  window.CHAIN_PLATFORM_IDS   = CHAIN_PLATFORM;
 
   /* ════════════════════════════════════════════════════════
      BOOT

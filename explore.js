@@ -539,17 +539,27 @@
   document.addEventListener('state:marketData', function () {
     if (!_mounted || !_container) return;
 
-    /* If the updated chain IS the one we're showing, update.
-     * For sorted categories: full re-render. Stable: in-place. */
-    var needsResort = _category === 'trending'
+    var listEl  = _container.querySelector('#explore-list');
+
+    /* If the list has no rendered token rows (showing skeleton or empty state),
+     * always do a full render. updatePricesInPlace() only patches EXISTING
+     * .explore-row[data-cgid] elements and silently does nothing against
+     * skeleton divs — causing the skeleton to persist forever on first load. */
+    var hasRows = listEl && !!listEl.querySelector('.explore-row[data-cgid]');
+
+    var needsFullRender = !hasRows
+      || _category === 'trending'
       || _category === 'gainers'
       || _category === 'losers'
       || _sortCol !== null;
 
-    if (needsResort) update();
-    else updatePricesInPlace();
+    if (needsFullRender) {
+      update();
+    } else {
+      updatePricesInPlace();
+    }
 
-    /* Also update chain pill for any chain that now has data (dot state) */
+    /* Mark chain pills that now have data */
     if (_container) {
       getActiveNetworks().forEach(function (cid) {
         var pill = _container.querySelector('[data-chain="' + cid + '"]');
