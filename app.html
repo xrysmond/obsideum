@@ -1979,6 +1979,54 @@
       pointer-events: none;
     }
 
+    /* ── Picker chain chips (inside token picker overlay) ── */
+    .picker-chain-chips {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: var(--sp-3);
+    }
+    .picker-chain-chips::-webkit-scrollbar { display: none; }
+
+    .picker-chain-chip {
+      flex-shrink: 0;
+      height: 24px;
+      padding: 0 10px;
+      border-radius: 12px;
+      border: 1px solid var(--trace);
+      background: transparent;
+      font-family: var(--fm);
+      font-size: .50rem;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--dim);
+      cursor: pointer;
+      white-space: nowrap;
+      transition:
+        border-color 140ms var(--ease-std),
+        color        140ms var(--ease-std),
+        background   140ms var(--ease-std),
+        opacity      120ms var(--ease-std);
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .picker-chain-chip:active {
+      border-color: var(--em-lo);
+      color: var(--em-2);
+    }
+    .picker-chain-chip.active {
+      border-color: var(--em);
+      background: rgba(156,61,187,.10);
+      color: var(--em-2);
+    }
+    .picker-chain-chip.switching {
+      opacity: .35;
+      pointer-events: none;
+    }
+
     /* ── FROM section wrapper (label + slot + pct row stacked) ── */
     .swap-from-section { display: block; }
 
@@ -2864,6 +2912,7 @@
   <div class="token-picker glass-m">
     <div class="token-picker-header">
       <p class="token-picker-title">Select Token</p>
+      <div class="picker-chain-chips" id="picker-chain-chips"></div>
       <input class="glass-input token-picker-search" id="token-picker-search"
         type="text" placeholder="Search by name or symbol…"
         autocomplete="off" spellcheck="false">

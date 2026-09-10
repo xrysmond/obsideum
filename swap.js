@@ -1602,6 +1602,24 @@
     );
   }
 
+  function _renderPickerChains() {
+    var chipsEl = document.getElementById('picker-chain-chips');
+    if (!chipsEl) return;
+    var activeNets = (window.STATE && STATE.settings && STATE.settings.activeNetworks)
+      || [1, 10, 8453, 42161];
+    var ch = (window.STATE && STATE.network) || 1;
+    chipsEl.innerHTML = activeNets.map(function (cid) {
+      var m = CHAIN_META[cid];
+      if (!m) return '';
+      return (
+        '<button class="picker-chain-chip' + (cid === ch ? ' active' : '') + '"' +
+            ' data-chain-id="' + cid + '">' +
+          m.label +
+        '</button>'
+      );
+    }).join('');
+  }
+
   function _renderPickerList(query) {
     var listEl = document.getElementById('token-picker-list');
     if (!listEl) return;
@@ -1637,6 +1655,7 @@
     var inp     = document.getElementById('token-picker-search');
     if (!overlay) return;
 
+    _renderPickerChains();
     _renderPickerList('');
     overlay.classList.add('open');
 
@@ -1717,6 +1736,43 @@
         }
       });
     }
+
+    /* ── Picker chain chip selection ── */
+    var pickerHeader = overlay.querySelector('.token-picker-header');
+    if (pickerHeader) {
+      pickerHeader.addEventListener('click', function (e) {
+        var chip = e.target.closest('.picker-chain-chip');
+        if (!chip) return;
+        var target = Number(chip.getAttribute('data-chain-id'));
+        if (target === ((window.STATE && STATE.network) || 1)) return;
+
+        /* Dim all chips while wallet prompt is pending */
+        document.querySelectorAll('.picker-chain-chip').forEach(function (c) {
+          c.classList.add('switching');
+        });
+
+        switchNetwork(target).catch(function (err) {
+          /* Re-enable on failure */
+          document.querySelectorAll('.picker-chain-chip').forEach(function (c) {
+            c.classList.remove('switching');
+          });
+          var m = CHAIN_META[target];
+          if (typeof showToast === 'function') {
+            showToast((m ? m.name : 'Network') + ' switch failed', 'terr');
+          }
+        });
+        /* On success: state:network → loadTokenList → state:tokenList → picker re-renders */
+      });
+    }
+
+    /* Re-render picker when token list loads (after chain switch or initial load) */
+    document.addEventListener('state:tokenList', function () {
+      var ov = document.getElementById('token-picker-overlay');
+      if (!ov || !ov.classList.contains('open')) return;
+      var searchInp = document.getElementById('token-picker-search');
+      _renderPickerChains();
+      _renderPickerList(searchInp ? searchInp.value : '');
+    });
   }
 
   /* ═══════════════════════════════════════════════════════════
