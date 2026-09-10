@@ -40,6 +40,9 @@ window.STATE = {
   trades:       [],  /* persisted trade history — loaded by loadTrades() at init    */
   priceHistory: {},  /* { [address]: { '24H': [...], '7D': [...], '30D': [...] } } */
 
+  /* ── Market data — owned by market.js ── */
+  marketData: {},  /* { chainId: [{ id, symbol, name, image, price, change24h, volume24h, marketCap, rank, address }] } — populated by market.js from CoinGecko */
+
   /* ── Portfolio ── */
   portfolioTotal:    0,   /* number — total USD value across all wallets + chains    */
   portfolioBalances: {},  /* { [chainId]: { [tokenAddress]: { balance: string, usd: number } } } */

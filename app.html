@@ -1710,11 +1710,9 @@
     .explore-view {
       display: flex;
       flex-direction: column;
-      min-height: 0;
+      height: 100%;       /* fills #mobile-explore which is position:absolute;inset:0 */
       padding-top: var(--sp-3);
-      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 80px);
-      height: 100%;
-      overflow: hidden;
+      overflow: hidden;   /* prevents the view itself from scrolling; padding-bottom moves to .explore-list */
     }
 
     .explore-search-row {
@@ -1897,6 +1895,7 @@
       -webkit-overflow-scrolling: touch;
       scrollbar-width: thin;
       scrollbar-color: rgba(156,61,187,.18) transparent;
+      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 80px); /* scroll room below last row — safe area + nav height */
     }
     .explore-list::-webkit-scrollbar       { width:3px; }
     .explore-list::-webkit-scrollbar-track { background:transparent; }
@@ -4146,18 +4145,58 @@
     }, 80);
   };
 
+  /* ── Per-chain native token definitions — mirrors CHAIN_NATIVE_TOKENS in portfolio.js.
+   * getToken() uses this to return the correct native token for any chain,
+   * not just the wallet's currently active chain. ──────────────────────────────────── */
+  var APP_NATIVE_TOKENS = {
+    1:      { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    10:     { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    56:     { address: 'NATIVE', symbol: 'BNB',  name: 'BNB',       decimals: 18 },
+    130:    { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    137:    { address: 'NATIVE', symbol: 'POL',  name: 'Polygon',   decimals: 18 },
+    8453:   { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    42161:  { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
+    43114:  { address: 'NATIVE', symbol: 'AVAX', name: 'Avalanche', decimals: 18 },
+  };
+
+  /* Wrapped token addresses used for chart history queries.
+   * The Uniswap V3 subgraph indexes WETH/WBNB/etc — not the literal 'NATIVE' ID.
+   * prices.js reads window.NATIVE_CHART_ADDRESS to resolve the correct subgraph address
+   * before calling mountChart on a NATIVE token. ────────────────────────────────────── */
+  window.NATIVE_CHART_ADDRESS = {
+    1:      '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', /* WETH  Ethereum  */
+    10:     '0x4200000000000000000000000000000000000006', /* WETH  Optimism  */
+    56:     '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', /* WBNB  BNB Chain */
+    130:    '0x4200000000000000000000000000000000000006', /* WETH  Unichain  */
+    137:    '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270', /* WMATIC Polygon  */
+    8453:   '0x4200000000000000000000000000000000000006', /* WETH  Base      */
+    42161:  '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', /* WETH  Arbitrum  */
+    43114:  '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7', /* WAVAX Avalanche */
+  };
+
   /* ── STATE helpers ──────────────────────────────────────────────── */
   function getToken(address) {
-    if (!window.STATE || !STATE.tokenList) return null;
-    for (var i = 0; i < STATE.tokenList.length; i++) {
-      if (STATE.tokenList[i].address === address) return STATE.tokenList[i];
+    /* NATIVE tokens: use STATE.tokenChainId (set by portfolio.js and explore.js on every tap).
+     * STATE.tokenList[0] is only the active wallet chain's native — wrong for multi-chain taps. */
+    if (address === 'NATIVE') {
+      var chainId = (window.STATE && STATE.tokenChainId) || (window.STATE && STATE.network) || 1;
+      return APP_NATIVE_TOKENS[chainId] || APP_NATIVE_TOKENS[1];
     }
-    return null;
+    var list = window.STATE && STATE.tokenList;
+    if (!list) return null;
+    return list.find(function (t) { return t.address === address; }) || null;
   }
 
   function getPrice(address) {
-    if (!window.STATE || !STATE.prices) return null;
-    return STATE.prices[address] || null;
+    var prices = window.STATE && STATE.prices;
+    if (!prices) return null;
+    /* Native token prices are keyed as 'NATIVE_<chainId>' by market.js.
+     * 'NATIVE' alone does not exist in STATE.prices — this was returning null for all native tokens. */
+    if (address === 'NATIVE') {
+      var chainId = (window.STATE && STATE.tokenChainId) || (window.STATE && STATE.network) || 1;
+      return prices['NATIVE_' + chainId] || null;
+    }
+    return prices[address] || null;
   }
 
   /* ── Swap navigation ────────────────────────────────────────────── */

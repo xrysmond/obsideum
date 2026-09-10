@@ -38,7 +38,7 @@
 
   /* View-only quoter — pure view function, NO revert pattern, works on any public RPC.
      Primary quote path for supported chains. Falls back to QuoterV2 for others.
-     Interface identical to QuoterV1: positional args, returns amountOut only.
+     Interface = QuoterV2 struct params (confirmed from IQuoter.sol in view-quoter-v3 repo).
      Source: github.com/Uniswap/view-quoter-v3 */
   var VIEW_QUOTER = {
     1:     '0x5e55c9e631fae526cd4b0526c4818d6e0a9ef0e3',
@@ -46,6 +46,8 @@
     56:    '0x5e55c9e631fae526cd4b0526c4818d6e0a9ef0e3',
     137:   '0x5e55c9e631fae526cd4b0526c4818d6e0a9ef0e3',
     8453:  '0x222ca98f00ed15b1fae10b61c277703a194cf5d2',
+    42161: '0x5e55c9e631fae526cd4b0526c4818d6e0a9ef0e3',
+    43114: '0xf0c802dcb0cf1c4f7b953756b49d940eed190221',
   };
 
   /* Uniswap V3 SwapRouter02 — executes exactInput[Single] */
@@ -195,21 +197,30 @@
      ABIs — JSON format (more reliable than human-readable for tuple types)
   ═══════════════════════════════════════════════════════════ */
 
-  /* View-only quoter — QuoterV1-style positional args, pure view function.
-     quoteExactInputSingle(tokenIn, tokenOut, fee, amountIn, sqrtPriceLimitX96)
-     returns (uint256 amountOut)
-     Note: fee is 3rd param (before amountIn) — different from QuoterV2 struct */
+  /* View-only quoter ABI — SAME struct interface as QuoterV2.
+     Confirmed from view-quoter-v3/contracts/interfaces/IQuoter.sol:
+     takes QuoteExactInputSingleParams struct, returns 4 values.
+     stateMutability is 'view' (no callStatic needed, but we use it anyway for safety). */
   var VIEW_QUOTER_ABI = [
     {
-      inputs: [
-        { name: 'tokenIn',           type: 'address' },
-        { name: 'tokenOut',          type: 'address' },
-        { name: 'fee',               type: 'uint24'  },
-        { name: 'amountIn',          type: 'uint256' },
-        { name: 'sqrtPriceLimitX96', type: 'uint160' },
-      ],
+      inputs: [{
+        components: [
+          { name: 'tokenIn',           type: 'address' },
+          { name: 'tokenOut',          type: 'address' },
+          { name: 'amountIn',          type: 'uint256' },
+          { name: 'fee',               type: 'uint24'  },
+          { name: 'sqrtPriceLimitX96', type: 'uint160' },
+        ],
+        name: 'params',
+        type: 'tuple',
+      }],
       name: 'quoteExactInputSingle',
-      outputs: [{ name: 'amountOut', type: 'uint256' }],
+      outputs: [
+        { name: 'amountOut',               type: 'uint256' },
+        { name: 'sqrtPriceX96After',       type: 'uint160' },
+        { name: 'initializedTicksCrossed', type: 'uint32'  },
+        { name: 'gasEstimate',             type: 'uint256' },
+      ],
       stateMutability: 'view',
       type: 'function',
     },
@@ -219,7 +230,12 @@
         { name: 'amountIn', type: 'uint256' },
       ],
       name: 'quoteExactInput',
-      outputs: [{ name: 'amountOut', type: 'uint256' }],
+      outputs: [
+        { name: 'amountOut',                   type: 'uint256'   },
+        { name: 'sqrtPriceX96AfterList',       type: 'uint160[]' },
+        { name: 'initializedTicksCrossedList', type: 'uint32[]'  },
+        { name: 'gasEstimate',                 type: 'uint256'   },
+      ],
       stateMutability: 'view',
       type: 'function',
     },
@@ -279,6 +295,12 @@
     'function approve(address spender,uint256 amount) returns (bool)',
     'function allowance(address owner,address spender) view returns (uint256)',
     'function balanceOf(address account) view returns (uint256)',
+  ];
+
+  /* WETH wrap/unwrap ABI — used when swapping ETH↔WETH (same underlying asset) */
+  var WETH_ABI = [
+    'function deposit() payable',
+    'function withdraw(uint256 wad)',
   ];
 
   /* ═══════════════════════════════════════════════════════════
@@ -463,37 +485,40 @@
   }
 
   /* ═══════════════════════════════════════════════════════════
-     QUOTE ENGINE — three-tier architecture
-     
-     Tier 1: View-only quoter (pure view, no revert, works on any RPC)
-             Used for chains 1/10/56/137/8453.
-             Interface = QuoterV1 positional: (tokenIn, tokenOut, fee, amountIn, sqrtLimitX96)
-             Returns: amountOut only (uint256).
-     
-     Tier 2: QuoterV2 via wallet provider (revert-based but wallet infra handles it)
-             Used when view-quoter unavailable AND wallet is connected.
-             Interface = struct param. Returns 4 values.
-     
-     Tier 3: QuoterV2 via public JsonRpcProvider (last resort — may fail on some nodes)
+     QUOTE ENGINE — two-tier architecture
+
+     Tier 1: View-only quoter (pure view fn, no revert pattern, any RPC works)
+             Chains: 1/10/56/137/8453/42161/43114.
+             Interface = QuoterV2 struct (confirmed from IQuoter.sol source).
+             Returns 4 values: amountOut, sqrtPriceX96After, ticksCrossed, gasEstimate.
+
+     Tier 2: QuoterV2 callStatic via wallet provider (revert-based, wallet infra handles it)
+             Used for Unichain (130) where view-quoter isn't deployed.
+             Falls back to public JsonRpcProvider if wallet not connected.
   ═══════════════════════════════════════════════════════════ */
 
-  /* ── View-only quoter: single fee tier, returns amountOut or null ── */
+  /* ── View-only quoter: single fee tier, struct call, returns result or null ── */
   function _viewQuoteTier(tokenIn, tokenOut, fee, amountIn, chainId) {
     var addr = VIEW_QUOTER[chainId];
     if (!addr) return Promise.resolve(null);
     var provider = getReadProvider(chainId);
     var quoter   = new ethers.Contract(addr, VIEW_QUOTER_ABI, provider);
 
-    /* positional: (tokenIn, tokenOut, fee, amountIn, sqrtPriceLimitX96) */
-    return quoter.quoteExactInputSingle(tokenIn, tokenOut, fee, amountIn, 0)
-      .then(function (amountOut) {
-        if (!amountOut || amountOut.isZero()) return null;
-        return { amountOut: amountOut, gasEstimate: null, fee: fee, isMultiHop: false };
-      })
-      .catch(function (e) {
-        console.error('[swap] view-quoter tier-1 failed fee=' + fee + ':', e.message || e);
-        return null;
-      });
+    /* struct call — same interface as QuoterV2 */
+    return quoter.callStatic.quoteExactInputSingle({
+      tokenIn:           tokenIn,
+      tokenOut:          tokenOut,
+      amountIn:          amountIn,
+      fee:               fee,
+      sqrtPriceLimitX96: 0,
+    }).then(function (r) {
+      /* r[0]=amountOut, r[3]=gasEstimate */
+      if (!r[0] || r[0].isZero()) return null;
+      return { amountOut: r[0], gasEstimate: r[3], fee: fee, isMultiHop: false };
+    }).catch(function (e) {
+      console.error('[swap] view-quoter failed fee=' + fee + ':', e.message || e);
+      return null;
+    });
   }
 
   /* ── QuoterV2: single fee tier via callStatic, returns amountOut+gasEstimate or null ── */
@@ -637,6 +662,26 @@
   }
 
   /* ═══════════════════════════════════════════════════════════
+     WRAP / UNWRAP — ETH ↔ WETH is NOT a swap
+     No Uniswap pool for WETH/WETH. Bypass the router entirely.
+  ═══════════════════════════════════════════════════════════ */
+
+  function isWrapUnwrap(fromAddr, toAddr, chainId) {
+    var a = toERC20Addr(fromAddr, chainId);
+    var b = toERC20Addr(toAddr,   chainId);
+    return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+  }
+
+  function executeWrapUnwrap(fromAddr, amountIn, chainId, signer) {
+    var wethAddr = WETH[chainId];
+    if (!wethAddr) return Promise.reject(new Error('No WETH on chain ' + chainId));
+    var weth = new ethers.Contract(wethAddr, WETH_ABI, signer);
+    return isNative(fromAddr)
+      ? weth.deposit({ value: amountIn })   /* ETH → WETH */
+      : weth.withdraw(amountIn);             /* WETH → ETH */
+  }
+
+  /* ═══════════════════════════════════════════════════════════
      APPROVAL — ERC-20.approve (no Permit2)
   ═══════════════════════════════════════════════════════════ */
 
@@ -679,59 +724,61 @@
     var quote        = opts.quote;
     var chainId      = opts.chainId;
     var signer       = opts.signer;
-    var wallet       = opts.wallet;
     var slippage     = opts.slippage || 0.5;
 
     var routerAddr = SWAP_ROUTER_02[chainId];
-    if (!routerAddr) return Promise.reject(new Error('No router for chain ' + chainId));
+    if (!routerAddr) return Promise.reject(new Error('No SwapRouter02 on chain ' + chainId));
 
-    var router      = new ethers.Contract(routerAddr, ROUTER_ABI, signer);
-    var isFromNative = isNative(tokenInAddr);
-    var isToNative   = isNative(tokenOutAddr);
-    var swapIn       = isFromNative ? WETH[chainId] : tokenInAddr;
-    var swapOut      = isToNative   ? WETH[chainId] : tokenOutAddr;
+    /* Resolve wallet address — opts.wallet may be null if STATE.wallet hasn't populated yet */
+    var walletPromise = opts.wallet
+      ? Promise.resolve(opts.wallet)
+      : signer.getAddress();
 
-    /* amountOutMinimum with slippage applied */
-    var bps    = Math.round(slippage * 100);
-    var minOut = quote.amountOut.mul(10000 - bps).div(10000);
+    return walletPromise.then(function (wallet) {
+      var router       = new ethers.Contract(routerAddr, ROUTER_ABI, signer);
+      var isFromNative = isNative(tokenInAddr);
+      var isToNative   = isNative(tokenOutAddr);
+      var swapIn       = isFromNative ? WETH[chainId] : tokenInAddr;
+      var swapOut      = isToNative   ? WETH[chainId] : tokenOutAddr;
 
-    var deadline = Math.floor(Date.now() / 1000) +
-                   ((window.STATE && STATE.settings && STATE.settings.deadline) || 20) * 60;
-    var txValue  = isFromNative ? amountIn : ethers.constants.Zero;
+      var bps     = Math.round(slippage * 100);
+      var minOut  = quote.amountOut.mul(10000 - bps).div(10000);
+      var txValue = isFromNative ? amountIn : ethers.constants.Zero;
 
-    if (!quote.isMultiHop) {
-      /* ── Single-hop: exactInputSingle ── */
-      var params = {
-        tokenIn:           swapIn,
-        tokenOut:          swapOut,
-        fee:               quote.fee,
-        recipient:         isToNative ? routerAddr : wallet,
-        amountIn:          amountIn,
-        amountOutMinimum:  minOut,
-        sqrtPriceLimitX96: 0,
-      };
-      if (isToNative) {
-        var d1 = router.interface.encodeFunctionData('exactInputSingle', [params]);
-        var d2 = router.interface.encodeFunctionData('unwrapWETH9', [minOut, wallet]);
-        return router.multicall([d1, d2], { value: txValue });
+      if (!quote.isMultiHop) {
+        /* ── Single-hop: exactInputSingle ── */
+        var params = {
+          tokenIn:           swapIn,
+          tokenOut:          swapOut,
+          fee:               quote.fee,
+          recipient:         isToNative ? routerAddr : wallet,
+          amountIn:          amountIn,
+          amountOutMinimum:  minOut,
+          sqrtPriceLimitX96: 0,
+        };
+        if (isToNative) {
+          var d1 = router.interface.encodeFunctionData('exactInputSingle', [params]);
+          var d2 = router.interface.encodeFunctionData('unwrapWETH9', [minOut, wallet]);
+          return router.multicall([d1, d2], { value: txValue });
+        }
+        return router.exactInputSingle(params, { value: txValue });
+
+      } else {
+        /* ── Multi-hop: exactInput with encoded path ── */
+        var mhParams = {
+          path:             quote.path,
+          recipient:        isToNative ? routerAddr : wallet,
+          amountIn:         amountIn,
+          amountOutMinimum: minOut,
+        };
+        if (isToNative) {
+          var d3 = router.interface.encodeFunctionData('exactInput', [mhParams]);
+          var d4 = router.interface.encodeFunctionData('unwrapWETH9', [minOut, wallet]);
+          return router.multicall([d3, d4], { value: txValue });
+        }
+        return router.exactInput(mhParams, { value: txValue });
       }
-      return router.exactInputSingle(params, { value: txValue });
-
-    } else {
-      /* ── Multi-hop: exactInput with encoded path ── */
-      var mhParams = {
-        path:             quote.path,
-        recipient:        isToNative ? routerAddr : wallet,
-        amountIn:         amountIn,
-        amountOutMinimum: minOut,
-      };
-      if (isToNative) {
-        var d3 = router.interface.encodeFunctionData('exactInput', [mhParams]);
-        var d4 = router.interface.encodeFunctionData('unwrapWETH9', [minOut, wallet]);
-        return router.multicall([d3, d4], { value: txValue });
-      }
-      return router.exactInput(mhParams, { value: txValue });
-    }
+    }); /* end walletPromise.then */
   }
 
   /* ═══════════════════════════════════════════════════════════
@@ -968,6 +1015,18 @@
       if (S.fromAddress === S.toAddress) {
         setExec('disabled', 'SELECT DIFFERENT TOKEN'); return;
       }
+      /* Wrap/unwrap: skip quoting check — it's always available */
+      if (_quote && _quote.isWrap) {
+        var ch0 = chain();
+        var held0 = getHeldBN(S.fromAddress, ch0, fromDec());
+        if (held0 !== null) {
+          try {
+            var amtBN0 = ethers.utils.parseUnits(raw, fromDec());
+            if (amtBN0.gt(held0)) { setExec('disabled', 'INSUFFICIENT BALANCE'); return; }
+          } catch (e) { setExec('disabled', 'INVALID AMOUNT'); return; }
+        }
+        setExec('ready', isNative(S.fromAddress) ? 'WRAP ETH' : 'UNWRAP WETH'); return;
+      }
       if (_quoting) {
         setExec('disabled', 'FINDING BEST RATE\u2026'); return;
       }
@@ -1023,6 +1082,18 @@
     /* ── Render a resolved quote ── */
     function renderQuote(quote, raw) {
       _quote = quote;
+
+      /* ── Wrap/unwrap path: 1:1 rate, no routing ── */
+      if (quote.isWrap) {
+        var outFmtW = fmtBN(quote.amountOut, toDec());
+        if (toOutput) { toOutput.textContent = outFmtW; toOutput.classList.add('has-value'); }
+        if (rateEl)   { rateEl.textContent = '1:1 \u00b7 no price impact'; rateEl.classList.add('has-rate'); }
+        if (gasEl)    gasEl.textContent = '\u223c30k gas';
+        if (routingEl){ routingEl.textContent = isNative(S.fromAddress) ? 'WETH.deposit()' : 'WETH.withdraw()'; routingEl.hidden = false; }
+        if (impactDiv) impactDiv.hidden = true;
+        refreshExecState();
+        return;
+      }
 
       /* Output amount */
       var outFmt = fmtBN(quote.amountOut, toDec());
@@ -1121,6 +1192,14 @@
       try { amtBN = ethers.utils.parseUnits(raw, fromDec()); }
       catch (e) { resetOutput(); return; }
 
+      /* ── Wrap/unwrap fast path — no DEX needed, instant quote ── */
+      if (isWrapUnwrap(S.fromAddress, S.toAddress, ch)) {
+        _quoting = false;
+        var wrapQuote = { isWrap: true, amountOut: amtBN, fee: null, isMultiHop: false };
+        renderQuote(wrapQuote, raw);
+        return;
+      }
+
       var swapIn  = toERC20Addr(S.fromAddress, ch);
       var swapOut = toERC20Addr(S.toAddress,   ch);
 
@@ -1164,7 +1243,7 @@
     }
 
     /* ── Success state ── */
-    function showSuccess(hash, ch, fm, tm, fromAmt, toAmt) {
+    function showSuccess(hash, ch, fm, tm, fromAmt, toAmt, successLabel) {
       _hideCard();
       if (!successDiv) return;
 
@@ -1173,9 +1252,13 @@
       var lnk = successDiv.querySelector('#success-etherscan');
       var agn = successDiv.querySelector('#swap-again');
       var cl  = successDiv.querySelector('.check-line');
+      var lbl = successDiv.querySelector('.success-label');
 
       /* Reset check animation */
       if (cl) { cl.style.transition = 'none'; cl.style.strokeDashoffset = '52'; }
+
+      /* Override header label for wrap/unwrap */
+      if (lbl) lbl.textContent = successLabel || 'SWAPPED';
 
       if (sub) sub.textContent =
         fromAmt + '\u2009' + (fm ? fm.symbol : '') +
@@ -1359,11 +1442,10 @@
           }
         }
 
-        var raw    = fromInput ? fromInput.value.trim() : '';
-        var ch     = chain();
-        var wallet = window.STATE && STATE.wallet;
-        var fm     = fromMeta();
-        var tm     = toMeta();
+        var raw = fromInput ? fromInput.value.trim() : '';
+        var ch  = chain();
+        var fm  = fromMeta();
+        var tm  = toMeta();
 
         var amtBN;
         try { amtBN = ethers.utils.parseUnits(raw, fromDec()); }
@@ -1373,22 +1455,47 @@
         try { signer = getSigner(); }
         catch (e) { if (typeof connect === 'function') connect(); return; }
 
+        /* ── WRAP / UNWRAP PATH — ETH ↔ WETH ── */
+        if (_quote && _quote.isWrap) {
+          setExec('busy', 'CONFIRM IN WALLET\u2026');
+          executeWrapUnwrap(S.fromAddress, amtBN, ch, signer)
+            .then(function (tx) {
+              setExec('busy', 'PENDING\u2026');
+              return tx.wait();
+            })
+            .then(function (receipt) {
+              _impactConfirmed = false;
+              var label = isNative(S.fromAddress) ? 'WRAPPED' : 'UNWRAPPED';
+              showSuccess(receipt.transactionHash, ch, fm, tm, raw, raw, label);
+            })
+            .catch(function (err) {
+              _impactConfirmed = false;
+              var msg = parseEthError(err);
+              if (msg === 'REJECTED') { refreshExecState(); return; }
+              showSwapError(msg);
+            });
+          return;
+        }
+
+        /* ── SWAP PATH ── */
         setExec('busy', 'APPROVING\u2026');
 
-        ensureApproval(S.fromAddress, amtBN, wallet, ch, signer, function (lbl) {
-          setExec('busy', lbl);
-        })
-        .then(function () {
-          setExec('busy', 'CONFIRM IN WALLET\u2026');
-          return executeSwapTx({
-            tokenInAddr:  S.fromAddress,
-            tokenOutAddr: S.toAddress,
-            amountIn:     amtBN,
-            quote:        _quote,
-            chainId:      ch,
-            signer:       signer,
-            wallet:       wallet,
-            slippage:     (window.STATE && STATE.settings && STATE.settings.slippage) || 0.5,
+        /* Resolve the wallet address from signer — avoids STATE.wallet null bug */
+        signer.getAddress().then(function (walletAddr) {
+          return ensureApproval(S.fromAddress, amtBN, walletAddr, ch, signer, function (lbl) {
+            setExec('busy', lbl);
+          }).then(function () {
+            setExec('busy', 'CONFIRM IN WALLET\u2026');
+            return executeSwapTx({
+              tokenInAddr:  S.fromAddress,
+              tokenOutAddr: S.toAddress,
+              amountIn:     amtBN,
+              quote:        _quote,
+              chainId:      ch,
+              signer:       signer,
+              wallet:       walletAddr,
+              slippage:     (window.STATE && STATE.settings && STATE.settings.slippage) || 0.5,
+            });
           });
         })
         .then(function (tx) {
@@ -1416,11 +1523,7 @@
         .catch(function (err) {
           _impactConfirmed = false;
           var msg = parseEthError(err);
-          if (msg === 'REJECTED') {
-            /* Silent reject — reset button, stay on card */
-            refreshExecState();
-            return;
-          }
+          if (msg === 'REJECTED') { refreshExecState(); return; }
           showSwapError(msg);
         });
       });

@@ -1,13 +1,7 @@
 /* prices.js — Phase 9C: Multi-chain token discovery via Uniswap V3 Subgraph
- *           — Phase 9B: Uniswap V3 Subgraph live prices · 15s polling (replaces Phase 7A Chainlink)
+ *           — Phase 9I: Removed price polling (moved to market.js / CoinGecko)
  *           — Phase 7B: Uniswap V3 subgraph · real price history · 24H/7D/30D
  *           — Phase 7C: Token metadata · 24h volume
- *
- * Live prices (Phase 9B):
- *   Active chain's Uniswap V3 Subgraph via The Graph decentralised network.
- *   Formula: token.derivedETH × bundle.ethPriceUSD = priceUSD
- *   Subgraph IDs verified for all 8 chains from official 0xddaa-760f7f deployer.
- *   Endpoint: gateway.thegraph.com/api/{key}/subgraphs/id/{id}
  *
  * Token discovery (Phase 9C):
  *   loadTokenList(chainId) — queries top 100 tokens by TVL per chain.
@@ -20,6 +14,8 @@
  *
  * The Graph API key stored in THE_GRAPH_API_KEY constant below.
  *
+ * Live prices now owned by market.js (CoinGecko → STATE.prices via STATE.marketData).
+ * NATIVE chart address resolved via window.NATIVE_CHART_ADDRESS (set by app.html).
  * renderChart() — untouched. Data shape: [[timestamp_ms, price_usd], ...]
  * UNCHAINED9. Built by Waeven Xrysmond.
  */
@@ -44,170 +40,6 @@
     42161: 'FbCGRftH4a3yZugY7TnbYgPJVEv2LvMT6oF1fxPe9aJM', /* Arbitrum One — verified */
     43114: 'GVH9h9KZ9CqheUEL93qMbq7QwgoBu32QXQDPR6bev4Eo', /* Avalanche    — verified */
   };
-
-  var _pollInterval = null; /* setInterval handle */
-
-  /*
-   * 24h snapshot system — localStorage
-   * Stores rolling array of { p: price, t: timestamp_ms } per token address.
-   * get24hChange() finds the snapshot closest to exactly 24h ago (±4h tolerance).
-   * Returns null if no qualifying snapshot exists — UI shows '—'.
-   */
-  var _SNAP_KEY = 'obsideum:priceSnap:v1';
-
-  function savePriceSnapshot(address, price) {
-    try {
-      var snaps = JSON.parse(localStorage.getItem(_SNAP_KEY) || '{}');
-      var now   = Date.now();
-      var arr   = snaps[address] || [];
-
-      /* Prune anything older than 30h */
-      arr = arr.filter(function (s) { return now - s.t < 30 * 3600000; });
-
-      /* Only append if the last snapshot is more than 20 minutes old */
-      var last = arr[arr.length - 1];
-      if (!last || now - last.t > 20 * 60000) {
-        arr.push({ p: price, t: now });
-      }
-
-      snaps[address] = arr;
-      localStorage.setItem(_SNAP_KEY, JSON.stringify(snaps));
-    } catch (_) {}
-  }
-
-  function get24hChange(address, currentPrice) {
-    try {
-      var snaps  = JSON.parse(localStorage.getItem(_SNAP_KEY) || '{}');
-      var arr    = snaps[address] || [];
-      var target = Date.now() - 24 * 3600000;
-      var best   = null;
-
-      arr.forEach(function (s) {
-        var diff = Math.abs(s.t - target);
-        if (diff < 4 * 3600000) { /* ±4h tolerance around the 24h mark */
-          if (!best || diff < Math.abs(best.t - target)) best = s;
-        }
-      });
-
-      if (!best || !best.p) return null;
-      return ((currentPrice - best.p) / best.p) * 100;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /*
-   * updateAllPrices(chainId)
-   * Queries the specified chain's Uniswap V3 Subgraph for top 100 tokens by TVL.
-   * Also stores the bundle's ethPriceUSD as 'NATIVE_<chainId>' — the chain's
-   * native token price (ETH on Ethereum/Arbitrum/etc, BNB on BNB Chain, AVAX on Avalanche).
-   * Formula: token.derivedETH × bundle.ethPriceUSD = priceUSD.
-   * Stablecoins with near-zero derivedETH are anchored to $1.00 (correct peg).
-   * On failure: logs error, preserves last known STATE.prices — never clears it.
-   */
-  async function updateAllPrices(chainId) {
-    chainId        = Number(chainId) || (window.STATE && STATE.network) || 1;
-    var subgraphId = SUBGRAPH_IDS[chainId] || SUBGRAPH_IDS[1];
-    var endpoint   = 'https://gateway.thegraph.com/api/' + THE_GRAPH_API_KEY + '/subgraphs/id/' + subgraphId;
-
-    var query = `{
-      bundle(id: "1") { ethPriceUSD }
-      tokens(
-        first: 100
-        orderBy: totalValueLockedUSD
-        orderDirection: desc
-        where: { totalValueLockedUSD_gt: "50000" }
-      ) {
-        id
-        derivedETH
-      }
-    }`;
-
-    try {
-      var res = await fetch(endpoint, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ query: query }),
-      });
-
-      if (!res.ok) throw new Error('Subgraph HTTP ' + res.status);
-
-      var json = await res.json();
-      if (!json.data) throw new Error('Subgraph returned no data');
-
-      var ethPrice = parseFloat(json.data.bundle.ethPriceUSD);
-      var updates  = {};
-
-      /* Store native token price per chain.
-       * Key: 'NATIVE_<chainId>' — portfolio.js reads this for native balance USD.
-       * On ETH mainnet: ethPrice = ETH price. On BNB Chain: ethPrice = BNB price.
-       * On Arbitrum: ethPrice = ETH price. Subgraph bundle always reflects the chain's
-       * native asset pricing basis, making this key correct for every chain. */
-      var nativeKey     = 'NATIVE_' + chainId;
-      var nativeChange  = get24hChange(nativeKey, ethPrice);
-      savePriceSnapshot(nativeKey, ethPrice);
-      updates[nativeKey] = {
-        usd:       ethPrice,
-        change24h: nativeChange,
-        updatedAt: Math.floor(Date.now() / 1000),
-      };
-
-      json.data.tokens.forEach(function (token) {
-        var addr    = ethers.utils.getAddress(token.id); /* normalise to checksum */
-        var derived = parseFloat(token.derivedETH);
-        var usd     = derived * ethPrice;
-
-        /* Stablecoins: derivedETH is near-zero — anchor to correct peg ($1.00) */
-        if (derived < 0.001 && usd < 2) usd = 1.00;
-
-        var change24h = get24hChange(addr, usd);
-        savePriceSnapshot(addr, usd);
-
-        updates[addr] = {
-          usd:       usd,
-          change24h: change24h,
-          updatedAt: Math.floor(Date.now() / 1000),
-        };
-      });
-
-      var merged = Object.assign({}, (window.STATE && STATE.prices) || {}, updates);
-      setState({ prices: merged });
-
-    } catch (err) {
-      /* Preserve last known prices — never clear STATE.prices on failure.
-       * Portfolio layer detects staleness via updatedAt on next balance refresh. */
-      console.error('[prices.js] updateAllPrices failed:', err.message);
-    }
-  }
-
-  /*
-   * updateAllChainPrices()
-   * Fires updateAllPrices() for every active chain simultaneously.
-   * This ensures NATIVE_<chainId> prices exist for all chains the user holds assets on.
-   * Without this, native balances on non-active chains compute as $0 USD.
-   */
-  async function updateAllChainPrices() {
-    var activeNetworks = (window.STATE && STATE.settings && STATE.settings.activeNetworks) || [1];
-    await Promise.all(
-      activeNetworks.map(function (cid) {
-        return updateAllPrices(cid).catch(function (err) {
-          console.warn('[prices.js] Chain', cid, 'price update failed:', err.message);
-        });
-      })
-    );
-  }
-
-  /*
-   * startPricePolling()
-   * Clears any existing interval, fetches immediately across ALL active chains,
-   * polls every 15s.
-   * Called at file load and whenever wallet or network state changes.
-   */
-  function startPricePolling() {
-    if (_pollInterval) clearInterval(_pollInterval);
-    updateAllChainPrices();
-    _pollInterval = setInterval(updateAllChainPrices, 15000);
-  }
 
   /* ─────────────────────────────────────────────────────────────────
      PHASE 9C — MULTI-CHAIN TOKEN DISCOVERY
@@ -654,6 +486,14 @@
      Delegation pattern unchanged — see Phase 4B comment for rationale.
   ───────────────────────────────────────────────────────────────── */
   function wireToggles(slot, address) {
+    /* Bug 3c: resolve wrapped address for subgraph history if NATIVE */
+    var chartAddr = (address === 'NATIVE' && window.NATIVE_CHART_ADDRESS)
+      ? (window.NATIVE_CHART_ADDRESS[
+           (window.STATE && STATE.tokenChainId) ||
+           (window.STATE && STATE.network) || 1
+         ] || address)
+      : address;
+
     var indicator = slot.querySelector('.chart-toggle-indicator');
 
     function posIndicator(btn) {
@@ -691,17 +531,17 @@
       var tf    = btn.dataset.range;
       var entry = window.STATE
         && STATE.priceHistory
-        && STATE.priceHistory[address]
-        && STATE.priceHistory[address][tf];
+        && STATE.priceHistory[chartAddr]
+        && STATE.priceHistory[chartAddr][tf];
 
-      if (entry && entry.prices && !isCacheStale(address, tf)) {
+      if (entry && entry.prices && !isCacheStale(chartAddr, tf)) {
         /* Cache is fresh — render immediately, no network call */
         hideChartSkeleton(priceDiv);
         renderChart(instance, entry.prices);
       } else {
         /* Fetch from subgraph */
         showChartSkeleton(priceDiv);
-        ensurePriceHistory(address, tf).then(function () {
+        ensurePriceHistory(chartAddr, tf).then(function () {
           /*
            * Guard: render only if this instance is still live and the
            * state:priceHistory path hasn't already hidden the skeleton.
@@ -709,8 +549,8 @@
           var liveInst = priceDiv._lc;
           var fresh    = window.STATE
             && STATE.priceHistory
-            && STATE.priceHistory[address]
-            && STATE.priceHistory[address][tf];
+            && STATE.priceHistory[chartAddr]
+            && STATE.priceHistory[chartAddr][tf];
           if (liveInst && fresh && fresh.prices && priceDiv.classList.contains('skeleton')) {
             hideChartSkeleton(priceDiv);
             renderChart(liveInst, fresh.prices);
@@ -740,6 +580,16 @@
         var priceDiv = slot && slot.querySelector('.price-chart');
         if (!slot || !priceDiv || !address) return;
 
+        /* Bug 3c: NATIVE tokens use the wrapped equivalent for subgraph history.
+         * The subgraph indexes WETH/WBNB/etc — not the 'NATIVE' sentinel.
+         * window.NATIVE_CHART_ADDRESS is set by app.html before prices.js loads. */
+        var chartAddr = (address === 'NATIVE' && window.NATIVE_CHART_ADDRESS)
+          ? (window.NATIVE_CHART_ADDRESS[
+               (window.STATE && STATE.tokenChainId) ||
+               (window.STATE && STATE.network) || 1
+             ] || address)
+          : address;
+
         destroyChart(priceDiv);
 
         var instance = initChart(priceDiv);
@@ -748,22 +598,22 @@
         var activeTf = tf || '24H';
         var entry    = window.STATE
           && STATE.priceHistory
-          && STATE.priceHistory[address]
-          && STATE.priceHistory[address][activeTf];
+          && STATE.priceHistory[chartAddr]
+          && STATE.priceHistory[chartAddr][activeTf];
 
-        if (entry && entry.prices && !isCacheStale(address, activeTf)) {
+        if (entry && entry.prices && !isCacheStale(chartAddr, activeTf)) {
           /* Cache is fresh — render immediately, no network call */
           hideChartSkeleton(priceDiv);
           renderChart(instance, entry.prices);
         } else {
           /* Fetch from subgraph */
           showChartSkeleton(priceDiv);
-          ensurePriceHistory(address, activeTf).then(function () {
+          ensurePriceHistory(chartAddr, activeTf).then(function () {
             var liveInst = priceDiv._lc;
             var fresh    = window.STATE
               && STATE.priceHistory
-              && STATE.priceHistory[address]
-              && STATE.priceHistory[address][activeTf];
+              && STATE.priceHistory[chartAddr]
+              && STATE.priceHistory[chartAddr][activeTf];
             if (liveInst && fresh && fresh.prices && priceDiv.classList.contains('skeleton')) {
               hideChartSkeleton(priceDiv);
               renderChart(liveInst, fresh.prices);
@@ -779,7 +629,7 @@
           b.classList.toggle('active', b.dataset.range === activeTf);
         });
 
-        wireToggles(slot, address);
+        wireToggles(slot, chartAddr);
       });
     }, 0);
   }
@@ -845,22 +695,20 @@
    *   Prefer e.detail; fall back to STATE.network for safety.
    */
   document.addEventListener('state:wallet', function () {
-    startPricePolling();
     loadTokenList((window.STATE && STATE.network) || 1);
   });
 
   document.addEventListener('state:network', function (e) {
-    startPricePolling(); /* Already polls all active chains — no extra call needed */
     loadTokenList(e.detail || (window.STATE && STATE.network) || 1);
   });
 
   /* ─────────────────────────────────────────────────────────────────
      BOOT
-     Fetch live prices and discover tokens immediately on file load.
+     Discover tokens immediately on file load.
      Default to Ethereum (chainId 1) until wallet connects and sets
      STATE.network — loadTokenList is a no-op for unsupported chainIds.
+     Live prices are owned by market.js (CoinGecko) — not polled here.
   ───────────────────────────────────────────────────────────────── */
-  startPricePolling();
   loadTokenList((window.STATE && STATE.network) || 1);
 
 }());

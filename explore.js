@@ -56,7 +56,7 @@
   var _sortDir      = 'desc';
   var _search       = '';
   var _debounce     = null;
-  var _navPending   = false; /* guard against double-tap on token rows */
+  /* _navPending removed — async resolveMarketAddress no longer on tap path (Bug 4) */
 
   /* ════════════════════════════════════════════════════════
      ACCESSORS
@@ -238,46 +238,26 @@
   function renderList(listEl, tokens) {
     listEl.innerHTML = tokens.map(buildRowHtml).join('');
 
-    /* Wire taps */
+    /* Wire taps — Bug 4 fix: no async on the tap critical path.
+     * resolveMarketAddress is never called here. Navigate immediately
+     * if address is known. If null, do nothing — market.js resolves
+     * addresses in the background on its next poll cycle.
+     * state:token listener in app.html handles ALL navigation — no
+     * direct setMobileSubView or openRightPanel calls from here. */
     listEl.querySelectorAll('.explore-row[data-cgid]').forEach(function (row) {
       function onTap() {
-        if (_navPending) return;
         var cgId  = row.dataset.cgid;
-        var chain = _exploreChain;
-
-        /* Find entry in market data */
-        var data  = getMarketData(chain) || [];
+        var data  = getMarketData(_exploreChain) || [];
         var entry = data.find(function (e) { return e.id === cgId; });
         if (!entry) return;
 
-        _navPending = true;
-        row.classList.add('explore-row-loading');
+        /* Never block the UI on an HTTP call.
+         * If the address is still null, do nothing — wait for market.js. */
+        if (!entry.address) return;
 
-        /* Resolve address then navigate */
-        var resolveP = (typeof resolveMarketAddress === 'function')
-          ? resolveMarketAddress(entry, chain)
-          : Promise.resolve(entry.address);
-
-        resolveP.then(function (address) {
-          if (address) {
-            setState({ token: address });
-            if (window.innerWidth < 768) {
-              if (typeof setMobileSubView === 'function') setMobileSubView('token');
-            } else {
-              if (typeof openRightPanel === 'function') openRightPanel('token');
-            }
-          } else {
-            /* Address unknown — still navigate using symbol fallback.
-             * Token detail view will show limited info. */
-            setState({ token: entry.symbol });
-            if (typeof setMobileSubView === 'function') setMobileSubView('token');
-          }
-        }).catch(function () {
-          /* Silently swallow — don't navigate on error */
-        }).finally(function () {
-          row.classList.remove('explore-row-loading');
-          _navPending = false;
-        });
+        /* Single setState call. state:token listener in app.html
+         * handles all navigation — mobile and desktop. */
+        setState({ token: entry.address, tokenChainId: _exploreChain });
       }
       row.addEventListener('click', onTap);
       row.addEventListener('keydown', function (e) {
