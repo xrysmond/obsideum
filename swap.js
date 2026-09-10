@@ -597,12 +597,12 @@
         var job;
         if (hasView && viewAddr) {
           var vq = new ethers.Contract(viewAddr, VIEW_QUOTER_ABI, provider);
-          job = vq.quoteExactInput(path, amountIn)
-            .then(function (amountOut) {
-              if (!amountOut || amountOut.isZero()) return null;
+          job = vq.callStatic.quoteExactInput(path, amountIn)
+            .then(function (r) {
+              if (!r || !r[0] || r[0].isZero()) return null;
               return {
-                amountOut:    amountOut,
-                gasEstimate:  null,
+                amountOut:    r[0],
+                gasEstimate:  r[3],
                 fee:          null,
                 isMultiHop:   true,
                 path:         path,
