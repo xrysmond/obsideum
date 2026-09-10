@@ -1589,15 +1589,19 @@
     var priceStr = (priceEntry && priceEntry.usd) ? fmtUsd(priceEntry.usd) : '';
 
     return (
-      '<div class="token-picker-row" data-address="' + esc(addr) + '"' +
+      '<div class="picker-token-row" data-address="' + esc(addr) + '"' +
           ' role="button" tabindex="0">' +
-        '<img class="picker-logo" src="' + src + '" alt="' + esc(symbol) + '"' +
-            ' onerror="this.style.display=\'none\';">' +
-        '<div class="picker-info">' +
-          '<span class="picker-symbol">' + esc(symbol) + '</span>' +
-          '<span class="picker-name">'   + esc(name)   + '</span>' +
+        '<img class="picker-token-logo" src="' + src + '" alt="' + esc(symbol) + '"' +
+            ' onerror="this.style.display=\'none\';' +
+              'var fb=this.nextElementSibling;if(fb){fb.style.display=\'flex\';}">' +
+        '<span class="picker-token-logo-fallback" style="display:none">' +
+          esc((symbol || '?').charAt(0)) +
+        '</span>' +
+        '<div class="picker-token-info">' +
+          '<span class="picker-token-name">'   + esc(name)   + '</span>' +
+          '<span class="picker-token-symbol">' + esc(symbol) + '</span>' +
         '</div>' +
-        (priceStr ? '<span class="picker-price">' + esc(priceStr) + '</span>' : '') +
+        (priceStr ? '<span class="picker-token-price">' + esc(priceStr) + '</span>' : '') +
       '</div>'
     );
   }
@@ -1702,7 +1706,7 @@
     /* Row selection */
     if (listEl) {
       listEl.addEventListener('click', function (e) {
-        var row = e.target.closest('.token-picker-row');
+        var row = e.target.closest('.picker-token-row');
         if (!row) return;
         var addr = row.getAttribute('data-address');
         if (!addr) return;
@@ -1731,7 +1735,7 @@
 
       listEl.addEventListener('keydown', function (e) {
         if (e.key === 'Enter' || e.key === ' ') {
-          var row = e.target.closest('.token-picker-row');
+          var row = e.target.closest('.picker-token-row');
           if (row) row.click();
         }
       });

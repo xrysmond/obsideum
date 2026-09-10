@@ -621,6 +621,12 @@ async function registerSubname(label)       { void label; throw new Error('Phase
 
 function wireProviderEvents(provider) {
   if (!provider || typeof provider.on !== 'function') return;
+  /* Guard: each provider instance only gets wired once.
+   * _buildPrivyBridge's useEffect re-runs on every render — without this,
+   * every re-render stacks a new set of accountsChanged / chainChanged /
+   * disconnect handlers on the same provider object. */
+  if (provider._obsideumWired) return;
+  provider._obsideumWired = true;
 
   provider.on('accountsChanged', function (accounts) {
     if (!accounts || !accounts.length) {
@@ -700,10 +706,19 @@ function _buildPrivyBridge(useEffect, usePrivy, useWallets) {
       primaryWallet.getEthereumProvider()
         .then(function (provider) {
           if (!alive) return;
-          window.privyProvider = provider;
+          /* For external (injected) wallets — Brave, MetaMask, etc. —
+           * Privy returns a wrapped proxy of the wallet's EIP-1193 provider.
+           * On Android, this wrapper swallows eth_sendTransaction before it
+           * reaches the wallet's native confirmation UI. Use window.ethereum
+           * directly so Brave Wallet's bottom sheet actually fires.
+           * Embedded Privy wallets sign server-side and use their own
+           * provider — leave those untouched. */
+          var isExternal  = primaryWallet.walletClientType !== 'privy';
+          var useProvider = (isExternal && window.ethereum) ? window.ethereum : provider;
+          window.privyProvider = useProvider;
           return Promise.all([
-            provider.request({ method: 'eth_accounts' }),
-            provider.request({ method: 'eth_chainId'  }),
+            useProvider.request({ method: 'eth_accounts' }),
+            useProvider.request({ method: 'eth_chainId'  }),
           ]);
         })
         .then(function (res) {
@@ -1063,11 +1078,17 @@ function _setActiveWallet(index) {
 
   wallet.getEthereumProvider()
     .then(function (provider) {
-      _provider             = provider;
-      window.privyProvider  = provider;
+      /* Mirror the same external-wallet preference as _buildPrivyBridge:
+       * use window.ethereum directly for injected wallets so the native
+       * confirmation UI (Brave bottom sheet, MetaMask modal) is triggered
+       * when swap.js calls eth_sendTransaction. */
+      var isExternal  = wallet.walletClientType !== 'privy';
+      var useProvider = (isExternal && window.ethereum) ? window.ethereum : provider;
+      _provider            = useProvider;
+      window.privyProvider = useProvider;
       return Promise.all([
-        provider.request({ method: 'eth_accounts' }),
-        provider.request({ method: 'eth_chainId'  }),
+        useProvider.request({ method: 'eth_accounts' }),
+        useProvider.request({ method: 'eth_chainId'  }),
       ]);
     })
     .then(function (res) {
