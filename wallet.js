@@ -32,7 +32,7 @@
 ═══════════════════════════════════════ */
 
 var PRIVY_APP_ID    = 'cmtemvtdu01rn0cjipu1ic33f';
-var PRIVY_CLIENT_ID = '';   /* ← paste your Privy client ID here */
+var PRIVY_CLIENT_ID = 'client-WY6d5Cv8Sps7wfzQ41LVNn1e1ynnnTS3GSyz2Hc5cuQVG';   /* ← paste your Privy client ID here */
 
 var NETWORK_NAMES = {
   1:        'Ethereum',
