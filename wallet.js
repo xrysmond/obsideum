@@ -996,6 +996,13 @@ document.addEventListener('state:wallet', function () {
   if (c) mountAccountsTab(c);
 });
 
+/* Wallets array changed (connect or disconnect) — re-render list immediately.
+ * state:wallet fires first but uses stale STATE.wallets; this catches the
+ * wallets-sync useEffect that fires a frame later with the real array. */
+document.addEventListener('state:wallets', function () {
+  if (_accountsOpen()) _renderWalletList();
+});
+
 /* ENS subname registered — refresh ENS section only */
 document.addEventListener('state:ensSubname', function () {
   if (_accountsOpen()) _renderENSSection();
