@@ -9,8 +9,8 @@
               restored. Clamped to live wallets array on init.
 
    Architecture: micro-island React pattern.
-   Invisible React root wraps PrivyProvider, bridges auth state
-   to window._privyBridge. No React elsewhere.
+   Vanilla JS auth via @privy-io/js-sdk-core
+   github.com/privy-io/examples/privy-vanilla-starter
 
    Provider contract:
      window.privyProvider — EIP-1193.
@@ -27,22 +27,12 @@
 
 /* ═══════════════════════════════════════
    CONFIGURATION
+   appId + clientId — both required by @privy-io/js-sdk-core.
+   Find your clientId in the Privy Dashboard → Settings → Client IDs.
 ═══════════════════════════════════════ */
 
-var PRIVY_APP_ID = 'cmtemvtdu01rn0cjipu1ic33f';
-
-var PRIVY_CONFIG = {
-  appearance: {
-    theme:       'dark',
-    accentColor: '#9C3DBB',
-  },
-  loginMethods: ['email', 'google', 'twitter', 'wallet'],
-  embeddedWallets: {
-    ethereum: {
-      createOnLogin: 'users-without-wallets',
-    },
-  },
-};
+var PRIVY_APP_ID    = 'cmtemvtdu01rn0cjipu1ic33f';
+var PRIVY_CLIENT_ID = '';   /* ← paste your Privy client ID here */
 
 var NETWORK_NAMES = {
   1:        'Ethereum',
@@ -65,10 +55,16 @@ var EXPLORER_URLS = {
 ═══════════════════════════════════════ */
 
 window.privyProvider  = null;
-var _privyInitialized = false;
 var _disconnectTimer  = null;
 var _claimDebounce    = null;
 
+/* Privy SDK instance and user state */
+var _privy             = null;
+var _user              = null;
+var _getEmbeddedWallet = null;
+var _getEntropyDetails = null;
+
+/* Resolves once SDK is loaded, iframe ready, and session checked */
 var _privyReadyResolve;
 var _privyReady = new Promise(function (res) { _privyReadyResolve = res; });
 
@@ -622,7 +618,6 @@ async function registerSubname(label)       { void label; throw new Error('Phase
 function wireProviderEvents(provider) {
   if (!provider || typeof provider.on !== 'function') return;
   /* Guard: each provider instance only gets wired once.
-   * _buildPrivyBridge's useEffect re-runs on every render — without this,
    * every re-render stacks a new set of accountsChanged / chainChanged /
    * disconnect handlers on the same provider object. */
   if (provider._obsideumWired) return;
@@ -654,241 +649,228 @@ function wireProviderEvents(provider) {
 }
 
 /* ═══════════════════════════════════════
-   PRIVY MICRO-ISLAND
-   Invisible React root bridges Privy's hooks
-   to window._privyBridge for vanilla JS use.
-
-   Exposed on _privyBridge:
-     login()      — opens Privy auth modal (all methods)
-     logout()     — clears session
-     linkWallet() — connector picker without re-auth (use for ADD WALLET)
-     linkGoogle() — link Google account to existing Privy user
-     linkTwitter()— link Twitter account to existing Privy user
-     linkEmail()  — link email to existing Privy user
+   PRIVY INIT
+   @privy-io/js-sdk-core — no React, no hooks, no bridge.
+   Copied from: github.com/privy-io/examples/privy-vanilla-starter/src/privy-client.js
 ═══════════════════════════════════════ */
 
-function _buildPrivyBridge(useEffect, usePrivy, useWallets) {
-  return function PrivyBridge() {
-    var p = usePrivy();
-    var w = useWallets();
+async function _loadPrivy() {
+  try {
+    /* Load vanilla SDK — same CDN pattern the project already uses */
+    var mod = await import('https://esm.sh/@privy-io/js-sdk-core');
 
-    var ready = p.ready, authenticated = p.authenticated;
-    var user  = p.user,  login = p.login, logout = p.logout;
-    var wallets = w.wallets;
+    var Privy        = mod.default || mod.Privy;
+    var LocalStorage = mod.LocalStorage;
+    _getEmbeddedWallet = mod.getUserEmbeddedEthereumWallet;
+    _getEntropyDetails = mod.getEntropyDetailsFromUser;
 
-    /* Prefer external wallet (MetaMask/Brave) over Privy embedded */
-    var primaryWallet = (authenticated && wallets && wallets.length)
-      ? (wallets.find(function (wlt) { return wlt.walletClientType !== 'privy'; }) || wallets[0])
-      : null;
-    var primaryAddr = primaryWallet ? primaryWallet.address : null;
-
-    /* Expose bridge every render — keeps all method refs fresh.
-     * Link methods require an authenticated session — Privy handles the guard. */
-    useEffect(function () {
-      window._privyBridge = {
-        login:         login,
-        logout:        logout,
-        ready:         ready,
-        authenticated: authenticated,
-        user:          user,
-        /* initOAuth — triggers a full-page redirect to the OAuth provider.
-         * No popup; works on Brave/mobile. Call: initOAuth({ provider: 'google' }) */
-        initOAuth:     p.initOAuth,
-        /* Link methods — use when user is already authenticated */
-        linkWallet:    p.linkWallet,
-        linkGoogle:    p.linkGoogle,
-        linkTwitter:   p.linkTwitter,
-        linkEmail:     p.linkEmail,
-      };
-      if (ready) _privyReadyResolve();
+    _privy = new Privy({
+      appId:    PRIVY_APP_ID,
+      clientId: PRIVY_CLIENT_ID,
+      storage:  new LocalStorage(),
     });
 
-    /* Provider init on connect / account switch */
-    useEffect(function () {
-      if (!ready || !primaryAddr || !primaryWallet) return;
-      var alive = true;
+    /* ── Embedded wallet iframe (privy-client.js) ─────────────────
+       The iframe hosts Privy's secure enclave for embedded wallet
+       signing. Required even when using external wallets so the
+       SDK initialises correctly.                                   */
+    var iframe = document.getElementById('privy-iframe');
+    if (!iframe) {
+      iframe = document.createElement('iframe');
+      iframe.id = 'privy-iframe';
+      iframe.style.cssText = 'display:none!important;position:absolute;pointer-events:none;';
+      document.body.appendChild(iframe);
+    }
+    iframe.src = _privy.embeddedWallet.getURL();
+    await new Promise(function (resolve) {
+      iframe.onload = function () {
+        _privy.setMessagePoster(iframe.contentWindow);
+        resolve();
+      };
+    });
+    window.addEventListener('message', function (e) {
+      if (e.source !== iframe.contentWindow || !e.data) return;
+      try { _privy.embeddedWallet.onMessage(e.data); } catch (_) {}
+    });
 
-      primaryWallet.getEthereumProvider()
-        .then(function (provider) {
-          if (!alive) return;
-          /* For external (injected) wallets — Brave, MetaMask, etc. —
-           * Privy returns a wrapped proxy of the wallet's EIP-1193 provider.
-           * On Android, this wrapper swallows eth_sendTransaction before it
-           * reaches the wallet's native confirmation UI. Use window.ethereum
-           * directly so Brave Wallet's bottom sheet actually fires.
-           * Embedded Privy wallets sign server-side and use their own
-           * provider — leave those untouched. */
-          var isExternal  = primaryWallet.walletClientType !== 'privy';
-          var useProvider = (isExternal && window.ethereum) ? window.ethereum : provider;
-          window.privyProvider = useProvider;
-          return Promise.all([
-            useProvider.request({ method: 'eth_accounts' }),
-            useProvider.request({ method: 'eth_chainId'  }),
-          ]);
-        })
-        .then(function (res) {
-          if (!alive || !res) return;
-          var accounts = res[0], chainId = res[1];
-          if (!accounts || !accounts.length) return;
-          setState({ wallet: accounts[0], connected: true, network: parseInt(chainId, 16) });
-          resolveENS(accounts[0]);
-          wireProviderEvents(window.privyProvider);
-        })
-        .catch(function (err) {
-          if (!alive) return;
-          console.error('[OBSIDEUM wallet] Provider init failed:', err);
-          if (typeof showToast === 'function') {
-            showToast('Could not access wallet. Try reconnecting.', 'terr');
-          }
-        });
+    /* ── OAuth callback (oauth-login.js checkForOAuthCallback) ─── */
+    await _handleOAuthCallback();
 
-      return function () { alive = false; };
-    }, [ready, primaryAddr]);
+    /* ── Restore existing session (auth-manager.js loadUser) ───── */
+    await _loadUser();
 
-    /* Logout detection */
-    useEffect(function () {
-      if (!ready) return;
-      if (!authenticated) {
-        window.privyProvider = null;
-        if (STATE.connected) {
-          setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
-        }
-      }
-    }, [ready, authenticated]);
-
-    /* Expose full wallets array. Clamp restored activeWallet index to actual range.
-     * loadSettings() may have restored an index that is now OOB (wallet removed between
-     * sessions). Clamp here — wallets.length is authoritative. */
-    useEffect(function () {
-      if (ready && wallets) {
-        var savedIdx = (window.STATE && STATE.activeWallet) || 0;
-        var validIdx = (savedIdx >= 0 && savedIdx < wallets.length) ? savedIdx : 0;
-        setState({ wallets: wallets, activeWallet: validIdx });
-      }
-    }, [ready, wallets]);
-
-    return null;
-  };
-}
-
-async function initPrivy() {
-  if (_privyInitialized) return;
-  _privyInitialized = true;
-
-  try {
-    var reactMod    = await import('https://esm.sh/react@18');
-    var reactDomMod = await import('https://esm.sh/react-dom@18/client');
-    var privyMod    = await import('https://esm.sh/@privy-io/react-auth@2?deps=react@18,react-dom@18');
-
-    var React         = reactMod.default;
-    var useEffect     = reactMod.useEffect;
-    var createRoot    = reactDomMod.createRoot;
-    var PrivyProvider = privyMod.PrivyProvider;
-    var usePrivy      = privyMod.usePrivy;
-    var useWallets    = privyMod.useWallets;
-
-    var PrivyBridge = _buildPrivyBridge(useEffect, usePrivy, useWallets);
-
-    var container = document.createElement('div');
-    container.id = 'privy-root';
-    container.setAttribute('aria-hidden', 'true');
-    container.style.cssText = 'display:none!important;position:absolute;pointer-events:none;';
-    document.body.appendChild(container);
-
-    createRoot(container).render(
-      React.createElement(
-        PrivyProvider,
-        { appId: PRIVY_APP_ID, config: PRIVY_CONFIG },
-        React.createElement(PrivyBridge, null)
-      )
-    );
   } catch (err) {
     console.error('[OBSIDEUM wallet] Privy SDK load failed:', err);
     if (typeof showToast === 'function') {
       showToast('Wallet service unavailable. Please refresh.', 'terr');
     }
+  } finally {
+    _privyReadyResolve();
   }
 }
 
 /* ═══════════════════════════════════════
-   OAUTH CALLBACK HANDLER
-   Mirrors privy-io/examples oauth-login.js.
-   PrivyProvider processes the redirect params automatically on mount —
-   we just surface errors and clean the URL once it's done.
+   OAUTH CALLBACK
+   Exact copy of oauth-login.js checkForOAuthCallback() + loginWithCode().
 ═══════════════════════════════════════ */
 
-(function handleOAuthCallback() {
+async function _handleOAuthCallback() {
   var params    = new URLSearchParams(window.location.search);
   var code      = params.get('privy_oauth_code');
   var state     = params.get('privy_oauth_state');
   var provider  = params.get('privy_oauth_provider');
   var error     = params.get('privy_oauth_error') || params.get('error');
   var errDesc   = params.get('privy_oauth_error_description') || params.get('error_description');
+  var oauthAction    = sessionStorage.getItem('privy_oauth_action');
+  var storedProvider = sessionStorage.getItem('privy_oauth_provider');
 
   if (error) {
-    _privyReady.then(function () {
-      if (typeof showToast === 'function') {
-        showToast('Login failed: ' + (errDesc || error), 'terr');
-      }
-    });
+    if (typeof showToast === 'function') showToast('Login failed: ' + (errDesc || error), 'terr');
+    sessionStorage.removeItem('privy_oauth_action');
+    sessionStorage.removeItem('privy_oauth_provider');
     window.history.replaceState({}, '', window.location.pathname);
     return;
   }
 
   if (!code || !state || !provider) return;
 
-  /* Callback params present — PrivyProvider will complete the OAuth flow
-   * on mount. Once Privy is ready, clean the URL so a hard-reload doesn't
-   * re-trigger the flow. */
-  _privyReady.then(function () {
-    window.history.replaceState({}, '', window.location.pathname);
-  });
-}());
-
-/* ═══════════════════════════════════════
-   SOCIAL LOGIN HELPERS
-   Uses initOAuth for a full-page redirect — no popup, no block on Brave mobile.
-   Exposed globally so wallet sheet buttons and any other UI can call them.
-   Pattern copied directly from privy-io/examples oauth-login.js loginWithOAuth().
-═══════════════════════════════════════ */
-
-async function connectWithOAuth(provider) {
-  await _privyReady;
-  if (!window._privyBridge || typeof window._privyBridge.initOAuth !== 'function') {
-    if (typeof showToast === 'function') showToast('Wallet service not ready. Try again.', 'terr');
-    return;
-  }
   try {
-    await window._privyBridge.initOAuth({ provider: provider });
-  } catch (err) {
-    var msg = (err && err.message) ? err.message.toLowerCase() : '';
-    if (!msg.includes('cancel') && !msg.includes('reject') &&
-        !msg.includes('close')  && !msg.includes('dismiss')) {
-      console.error('[OBSIDEUM wallet] OAuth error:', err);
-      if (typeof showToast === 'function') showToast('Social login failed. Try again.', 'terr');
+    if (oauthAction === 'link') {
+      /* Link OAuth to an existing Privy user */
+      await _privy.auth.oauth.linkWithCode(
+        code, state, storedProvider || provider, undefined
+      );
+      if (typeof showToast === 'function') showToast((storedProvider || provider) + ' linked!', 'tok');
+      window.history.replaceState({}, '', window.location.pathname);
+      window.location.reload();
+    } else {
+      /* Login — copied verbatim from oauth-login.js loginWithCode() */
+      var session = await _privy.auth.oauth.loginWithCode(
+        code,
+        state,
+        provider,
+        undefined,
+        'login-or-sign-up',
+        {
+          embedded: {
+            ethereum: { createOnLogin: 'user-without-wallets' },
+          },
+        }
+      );
+      window.history.replaceState({}, '', window.location.pathname);
+      await _afterLogin(session);
+      if (typeof showToast === 'function') showToast('Login successful!', 'tok');
     }
+  } catch (err) {
+    console.error('[OBSIDEUM wallet] OAuth callback error:', err);
+    if (typeof showToast === 'function') showToast('Login failed: ' + (err.message || 'unknown'), 'terr');
+    window.history.replaceState({}, '', window.location.pathname);
+  } finally {
+    sessionStorage.removeItem('privy_oauth_action');
+    sessionStorage.removeItem('privy_oauth_provider');
   }
 }
 
-window.connectWithGoogle  = function () { return connectWithOAuth('google');  };
-window.connectWithTwitter = function () { return connectWithOAuth('twitter'); };
-window.connectWithOAuth   = connectWithOAuth;
+/* ═══════════════════════════════════════
+   SESSION
+   auth-manager.js loadUser() pattern.
+═══════════════════════════════════════ */
+
+async function _loadUser() {
+  try {
+    var result = await _privy.user.get();
+    _user = result.user;
+    if (_user) await _setupProvider();
+  } catch (_) {
+    _user = null;
+  }
+}
+
+async function _afterLogin(session) {
+  _user = session.user;
+  await _setupProvider();
+  setState({ wallets: _user ? [{ address: STATE.wallet }] : [], activeWallet: 0 });
+  _renderWalletList();
+}
 
 /* ═══════════════════════════════════════
-   VISIBILITY RE-VALIDATION  (Bug 3 — stale connected state)
-   When the user switches back to the tab after Privy's session expires in
-   the background, STATE.connected stays true but authenticated is false.
-   This listener catches that mismatch and clears the stale state.
+   PROVIDER SETUP
+   wallet-actions.js pattern:
+   External wallet → window.ethereum directly (no Privy wrapper).
+   Embedded wallet → privy.embeddedWallet.getEthereumProvider().
+═══════════════════════════════════════ */
+
+async function _setupProvider() {
+  if (!_user) return;
+
+  var linked = _user.linked_accounts || [];
+
+  /* Prefer external (injected) wallet */
+  var extWallet = linked.find(function (a) {
+    return a.type === 'wallet' &&
+           a.wallet_client_type !== 'privy' &&
+           a.chain_type === 'ethereum';
+  });
+
+  if (extWallet && window.ethereum) {
+    window.privyProvider = window.ethereum;
+    try {
+      var accs = await window.ethereum.request({ method: 'eth_accounts' });
+      var cid  = await window.ethereum.request({ method: 'eth_chainId'  });
+      if (accs && accs.length) {
+        setState({ wallet: accs[0], connected: true, network: parseInt(cid, 16) });
+        resolveENS(accs[0]);
+        setState({ wallets: [{ address: accs[0], walletClientType: extWallet.wallet_client_type }], activeWallet: 0 });
+      }
+    } catch (e) {
+      console.error('[OBSIDEUM wallet] External wallet accounts error:', e);
+    }
+    wireProviderEvents(window.ethereum);
+    return;
+  }
+
+  /* Embedded wallet */
+  if (!_getEmbeddedWallet || !_getEntropyDetails) return;
+  var embWallet = _getEmbeddedWallet(_user);
+  if (!embWallet) return;
+
+  try {
+    var details  = _getEntropyDetails(_user);
+    var provider = await _privy.embeddedWallet.getEthereumProvider({
+      wallet:            embWallet,
+      entropyId:         details.entropyId,
+      entropyIdVerifier: details.entropyIdVerifier,
+    });
+    window.privyProvider = provider;
+
+    var accounts = await provider.request({ method: 'eth_accounts' });
+    var chainId  = await provider.request({ method: 'eth_chainId'  });
+    if (accounts && accounts.length) {
+      setState({ wallet: accounts[0], connected: true, network: parseInt(chainId, 16) });
+      resolveENS(accounts[0]);
+      setState({ wallets: [{ address: accounts[0], walletClientType: 'privy' }], activeWallet: 0 });
+    }
+    wireProviderEvents(provider);
+  } catch (err) {
+    console.error('[OBSIDEUM wallet] Embedded wallet setup error:', err);
+  }
+}
+
+/* ═══════════════════════════════════════
+   VISIBILITY RE-VALIDATION
+   Re-checks Privy session when tab regains focus.
+   Clears stale STATE.connected if session has expired.
 ═══════════════════════════════════════ */
 
 document.addEventListener('visibilitychange', function () {
-  if (document.visibilityState !== 'visible') return;
-  if (!window._privyBridge) return;
-  if (window._privyBridge.authenticated === false && STATE.connected) {
-    console.log('[OBSIDEUM wallet] Stale session detected on focus — clearing state.');
-    window.privyProvider = null;
-    setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
-  }
+  if (document.visibilityState !== 'visible' || !_privy) return;
+  _privy.user.get().catch(function () {
+    if (STATE.connected) {
+      window.privyProvider = null;
+      setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
+      _renderWalletList();
+    }
+  });
 });
 
 /* ═══════════════════════════════════════
@@ -896,47 +878,106 @@ document.addEventListener('visibilitychange', function () {
 ═══════════════════════════════════════ */
 
 async function checkExistingConnection() {
-  await initPrivy();
+  _loadPrivy();
 }
 
+/* connect — SIWE for injected wallet (external-wallet-login.js),
+   falls back to social/email hint if no wallet detected.           */
 async function connect() {
   await _privyReady;
-  if (!window._privyBridge) {
+
+  if (STATE.connected) { openWalletSheet(); return; }
+
+  if (!_privy) {
     if (typeof showToast === 'function') showToast('Wallet service not ready. Try again.', 'terr');
     return;
   }
-  try {
-    await window._privyBridge.login();
-  } catch (err) {
-    var msg = err && err.message ? err.message.toLowerCase() : '';
-    if (!msg.includes('cancel') && !msg.includes('reject') &&
-        !msg.includes('close')  && !msg.includes('dismiss')) {
-      console.error('[OBSIDEUM wallet] Login error:', err);
-      if (typeof showToast === 'function') showToast('Connection failed. Please try again.', 'terr');
+
+  if (window.ethereum) {
+    /* External wallet — SIWE (external-wallet-login.js loginWithExternalWallet) */
+    try {
+      var accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      if (!accounts || !accounts.length) return;
+      var address = accounts[0];
+      var chainId = await window.ethereum.request({ method: 'eth_chainId' });
+
+      var { message } = await _privy.auth.siwe.init(
+        {
+          address:          address,
+          chainId:          'eip155:' + parseInt(chainId, 16),
+          walletClientType: 'brave_wallet',
+          connectorType:    'injected',
+        },
+        window.location.host,
+        window.location.origin
+      );
+
+      var signature = await window.ethereum.request({
+        method: 'personal_sign',
+        params: [message, address],
+      });
+
+      var session = await _privy.auth.siwe.loginWithSiwe(
+        signature, undefined, undefined,
+        'login-or-sign-up',
+        { ethereum: { createOnLogin: 'user-without-wallets' } }
+      );
+
+      await _afterLogin(session);
+      if (typeof showToast === 'function') showToast('Wallet connected!', 'tok');
+
+    } catch (err) {
+      var msg = (err && err.message) ? err.message.toLowerCase() : '';
+      if (!msg.includes('cancel') && !msg.includes('reject') && !msg.includes('denied')) {
+        console.error('[OBSIDEUM wallet] Connect error:', err);
+        if (typeof showToast === 'function') showToast('Connection failed. Try again.', 'terr');
+      }
+    }
+
+  } else {
+    /* No injected wallet — prompt social/email login */
+    if (typeof showToast === 'function') {
+      showToast('No wallet detected. Use Google or email login below.', 'info');
     }
   }
 }
 
+/* disconnect — auth-manager.js logout() pattern exactly.
+   No redirect. Clears state only.                                   */
 async function disconnect() {
   closeWalletSheet();
-  if (!window._privyBridge) {
-    /* Bridge not ready — clear local state only. No redirect. */
-    window.privyProvider = null;
-    setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
+  try {
+    if (_privy) await _privy.auth.logout();
+  } catch (err) {
+    console.error('[OBSIDEUM wallet] Logout error:', err);
+  }
+  _user              = null;
+  window.privyProvider = null;
+  setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
+  _renderWalletList();
+}
+
+/* connectWithOAuth — oauth-login.js loginWithOAuth() exactly.
+   Full-page redirect — no popup, guaranteed to work on Brave mobile. */
+async function connectWithOAuth(oauthProvider) {
+  await _privyReady;
+  if (!_privy) {
+    if (typeof showToast === 'function') showToast('Wallet service not ready. Try again.', 'terr');
     return;
   }
   try {
-    await window._privyBridge.logout();
-    /* Success — PrivyBridge's logout-detection useEffect fires,
-     * sets authenticated=false, clears STATE. Nothing else needed. */
+    var redirectURI = window.location.href.split('?')[0];
+    var result = await _privy.auth.oauth.generateURL(oauthProvider, redirectURI);
+    window.location.href = result.url;
   } catch (err) {
-    console.error('[OBSIDEUM wallet] Logout error:', err);
-    window.privyProvider = null;
-    setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
+    console.error('[OBSIDEUM wallet] OAuth error:', err);
+    if (typeof showToast === 'function') showToast('Social login failed. Try again.', 'terr');
   }
-  /* REMOVED: window.location.href = 'index.html' — this was the redirect bug.
-   * auth-manager.js pattern: logout clears state only, never navigates. */
 }
+
+window.connectWithGoogle  = function () { return connectWithOAuth('google');  };
+window.connectWithTwitter = function () { return connectWithOAuth('twitter'); };
+window.connectWithOAuth   = connectWithOAuth;
 
 /* ═══════════════════════════════════════
    STATE EVENT LISTENERS
@@ -998,7 +1039,6 @@ document.addEventListener('state:wallet', function () {
 
 /* Wallets array changed (connect or disconnect) — re-render list immediately.
  * state:wallet fires first but uses stale STATE.wallets; this catches the
- * wallets-sync useEffect that fires a frame later with the real array. */
 document.addEventListener('state:wallets', function () {
   if (_accountsOpen()) _renderWalletList();
 });
@@ -1169,39 +1209,13 @@ function _setActiveWallet(index) {
   if (!wallets || !wallets[index]) return;
 
   setState({ activeWallet: index });
-
-  /* Persist so the active wallet survives a page reload */
   try { localStorage.setItem('obsideum:activeWallet', String(index)); } catch (_) {}
 
-  var wallet    = wallets[index];
-  var _provider = null;
-
-  wallet.getEthereumProvider()
-    .then(function (provider) {
-      /* Mirror the same external-wallet preference as _buildPrivyBridge:
-       * use window.ethereum directly for injected wallets so the native
-       * confirmation UI (Brave bottom sheet, MetaMask modal) is triggered
-       * when swap.js calls eth_sendTransaction. */
-      var isExternal  = wallet.walletClientType !== 'privy';
-      var useProvider = (isExternal && window.ethereum) ? window.ethereum : provider;
-      _provider            = useProvider;
-      window.privyProvider = useProvider;
-      return Promise.all([
-        useProvider.request({ method: 'eth_accounts' }),
-        useProvider.request({ method: 'eth_chainId'  }),
-      ]);
-    })
-    .then(function (res) {
-      if (!res) return;
-      var accounts = res[0];
-      var chainId  = res[1];
-      if (!accounts || !accounts.length) return;
-      setState({ wallet: accounts[0], connected: true, network: parseInt(chainId, 16) });
-      resolveENS(accounts[0]);
-      if (_provider) wireProviderEvents(_provider);
-      /* Re-render wallet list to reflect new active card */
-      _renderWalletList();
-    })
+  /* With js-sdk-core, _setupProvider() re-reads the active linked accounts
+   * from the Privy user object and sets window.privyProvider correctly.
+   * External wallet → window.ethereum; embedded → privy.embeddedWallet provider. */
+  _setupProvider()
+    .then(function () { _renderWalletList(); })
     .catch(function (err) {
       console.error('[OBSIDEUM wallet] Switch wallet failed:', err);
       if (typeof showToast === 'function') showToast('Could not switch wallet.', 'terr');
@@ -1447,23 +1461,9 @@ function mountAccountsTab(container) {
   var addBtn = document.getElementById('accounts-add-wallet');
   if (addBtn) {
     addBtn.addEventListener('click', function () {
-      if (!window._privyBridge) return;
-      /*
-       * linkWallet() — shows Privy's connector picker without requiring
-       * the user to log out and back in. This is the correct call for
-       * "add another wallet while already authenticated". It always presents
-       * all available connection methods (MetaMask, WalletConnect, Brave, etc.)
-       * regardless of which wallet is currently active.
-       *
-       * login() is wrong here — when already authenticated, Privy may
-       * auto-skip the method picker and reconnect the existing wallet.
-       */
-      if (typeof window._privyBridge.linkWallet === 'function') {
-        window._privyBridge.linkWallet();
-      } else {
-        /* Privy version fallback — link methods not yet available */
-        window._privyBridge.login();
-      }
+      /* Add wallet — re-runs the SIWE connect flow.
+       * With js-sdk-core, linkWallet() doesn't exist; SIWE handles everything. */
+      connect();
     });
   }
 }
