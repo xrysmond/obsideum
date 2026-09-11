@@ -3133,9 +3133,21 @@
     if (!mobileWordmark) return;
     mobileWordmark.classList.remove('ctx-token', 'ctx-section');
     if (view === 'token') {
-      var tList = window.STATE && STATE.tokenList;
-      var match = tList && tList.find(function (t) { return t.address === STATE.token; });
-      mobileWordmark.textContent = match ? match.symbol : 'OBSIDEUM';
+      /* Prefer tokenMeta (set on every tap, works cross-chain).
+       * Fall back to tokenList search (active chain only). */
+      var sym = (window.STATE && STATE.tokenMeta && STATE.tokenMeta.symbol)
+        || (function () {
+          var addr  = window.STATE && STATE.token;
+          var tList = window.STATE && STATE.tokenList;
+          if (!addr || !tList) return '';
+          if (addr === 'NATIVE') {
+            var cid = (window.STATE && STATE.tokenChainId) || (window.STATE && STATE.network) || 1;
+            return (APP_NATIVE_TOKENS[cid] || APP_NATIVE_TOKENS[1]).symbol;
+          }
+          var match = tList.find(function (t) { return t.address === addr; });
+          return match ? match.symbol : '';
+        }());
+      mobileWordmark.textContent = sym || 'OBSIDEUM';
       mobileWordmark.classList.add('ctx-token');
     } else if (view === 'settings') {
       mobileWordmark.textContent = 'SETTINGS';
@@ -3310,9 +3322,17 @@
     var isMobile  = window.innerWidth < 768;
 
     if (action === 'swap') {
+      /* Clear the swap card so mountSwapCard remounts fresh and reads
+       * STATE.token for preselection. Without this, the existing guard
+       * (if container.querySelector('.swap-view')) return) prevents remount
+       * and the previously selected token stays locked. */
+      ['right-panel-content', 'mobile-swap'].forEach(function (id) {
+        var c  = document.getElementById(id);
+        var sv = c && c.querySelector('.swap-view');
+        if (sv) c.innerHTML = '';
+      });
       if (isMobile) setMobileTab('swap');
       else          openRightPanel('swap');
-      /* swap.js reads STATE.token on mount — preselection handled there */
     }
     if (action === 'send') {
       if (isMobile) setMobileSubView('send');
@@ -3438,11 +3458,18 @@
   var mobileSearch  = document.getElementById('mobile-token-search');
   var currentQuery  = '';
 
-  function getLogoUrl(address) {
+  function getLogoUrl(address, chainId) {
+    var FOLDER = {
+      1: 'ethereum', 10: 'optimism', 56: 'smartchain', 130: 'ethereum',
+      137: 'polygon', 8453: 'base', 42161: 'arbitrum', 43114: 'avalanche',
+    };
+    var folder = FOLDER[chainId] || 'ethereum';
+    if (!address || address === 'NATIVE') {
+      return 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/' + folder + '/info/logo.png';
+    }
     var cs = address;
     try { cs = ethers.utils.getAddress(address); } catch (_) {}
-    return 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/'
-      + cs + '/logo.png';
+    return 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/' + folder + '/assets/' + cs + '/logo.png';
   }
 
   function formatPrice(usd) {
@@ -4225,12 +4252,21 @@
 
   /* ── STATE helpers ──────────────────────────────────────────────── */
   function getToken(address) {
-    /* NATIVE tokens: use STATE.tokenChainId (set by portfolio.js and explore.js on every tap).
-     * STATE.tokenList[0] is only the active wallet chain's native — wrong for multi-chain taps. */
+    /* NATIVE tokens: use STATE.tokenChainId for correct per-chain definition */
     if (address === 'NATIVE') {
       var chainId = (window.STATE && STATE.tokenChainId) || (window.STATE && STATE.network) || 1;
       return APP_NATIVE_TOKENS[chainId] || APP_NATIVE_TOKENS[1];
     }
+
+    /* STATE.tokenMeta is set by explore.js (and portfolio.js) on every token tap.
+     * It carries the full metadata from CoinGecko — works for any chain, regardless
+     * of whether the token is in STATE.tokenList (active wallet chain only).
+     * This is the primary source when navigating from Explore. */
+    if (window.STATE && STATE.tokenMeta && STATE.tokenMeta.address === address) {
+      return STATE.tokenMeta;
+    }
+
+    /* Fallback: search active chain's token list (covers portfolio taps) */
     var list = window.STATE && STATE.tokenList;
     if (!list) return null;
     return list.find(function (t) { return t.address === address; }) || null;
@@ -4238,14 +4274,22 @@
 
   function getPrice(address) {
     var prices = window.STATE && STATE.prices;
-    if (!prices) return null;
-    /* Native token prices are keyed as 'NATIVE_<chainId>' by market.js.
-     * 'NATIVE' alone does not exist in STATE.prices — this was returning null for all native tokens. */
     if (address === 'NATIVE') {
       var chainId = (window.STATE && STATE.tokenChainId) || (window.STATE && STATE.network) || 1;
-      return prices['NATIVE_' + chainId] || null;
+      return (prices && prices['NATIVE_' + chainId]) || null;
     }
-    return prices[address] || null;
+    var fromPrices = prices && prices[address];
+    if (fromPrices) return fromPrices;
+
+    /* Fallback: tokenMeta carries fresh CoinGecko price data.
+     * For explore tokens whose address wasn't in STATE.prices yet
+     * (e.g. long-tail tokens on non-active chains), this guarantees
+     * price + change24h always render. */
+    var meta = window.STATE && STATE.tokenMeta;
+    if (meta && meta.address === address && meta.price !== null && meta.price !== undefined) {
+      return { usd: meta.price, change24h: meta.change24h };
+    }
+    return null;
   }
 
   /* ── Swap navigation ────────────────────────────────────────────── */
@@ -4329,7 +4373,7 @@
       /* Header */
       '<div class="token-panel-header">'
       +   '<img class="token-panel-logo"'
-      +       ' src="' + getLogoUrl(token.address) + '"'
+      +       ' src="' + ((window.STATE && STATE.tokenMeta && STATE.tokenMeta.image) || getLogoUrl(token.address, (window.STATE && STATE.tokenChainId) || 1)) + '"'
       +       ' alt="' + token.symbol + '"'
       +       ' width="40" height="40">'
       +   '<div class="token-logo-fallback-lg" style="display:none">'
@@ -4509,6 +4553,19 @@
   }
 
   function _getTokenSymbol(address) {
+    /* NATIVE tokens: symbol depends on the chain, not the active wallet chain.
+     * Without tokenChainId, tapping BNB on chain 56 while wallet is on Ethereum
+     * returns 'ETH' because STATE.tokenList[0].symbol = 'ETH' there. */
+    if (address === 'NATIVE') {
+      var nChainId = (window.STATE && STATE.tokenChainId) || (window.STATE && STATE.network) || 1;
+      var nDef = APP_NATIVE_TOKENS[nChainId] || APP_NATIVE_TOKENS[1];
+      return nDef.symbol;
+    }
+    /* STATE.tokenMeta is set on every tap — covers cross-chain explore tokens
+     * that are not in STATE.tokenList (which is active wallet chain only). */
+    if (window.STATE && STATE.tokenMeta && STATE.tokenMeta.symbol) {
+      return STATE.tokenMeta.symbol;
+    }
     var list = window.STATE && STATE.tokenList;
     if (!list || !address) return '';
     var t = list.find(function (tok) { return tok.address === address; });
