@@ -1,21 +1,32 @@
 /* ═══════════════════════════════════════════════════════════
-   OBSIDEUM — explore.js  (Phase 9H-rebuild)
-   Market explore tab.
+   OBSIDEUM — explore.js  (Phase 9J — full rebuild)
+   Token explorer tab.
 
-   SWITCHED: STATE.marketData (market.js push) →
-             own lazy CoinGecko fetch per chain (on-demand)
+   DATA SOURCES:
+   ─────────────
+   Token discovery:  Uniswap default token list
+                     https://tokens.uniswap.org
+                     Every token has a real address → every row is tappable.
+                     No KNOWN_ADDRESSES. No null-address blocking. Ever.
 
-   Why:  market.js used to poll CoinGecko for all 8 chains every 60s.
-         That was 8 req/min constantly — hit the 30 req/min limit,
-         triggered 429s, and starved portfolio of prices too.
+   Prices:           DeFiLlama /prices/current/ (batch, no rate limit)
+                     https://coins.llama.fi/prices/current/
 
-   Now:  explore fetches ONE chain from CoinGecko when the user
-         actually opens the explore tab or switches chain pills.
-         Data is cached for CACHE_TTL_MS (5 minutes) per chain.
-         market.js (now DeFiLlama) is fully decoupled from explore.
+   24h change:       DeFiLlama /percentage/ endpoint
+                     https://coins.llama.fi/percentage/
 
-   Chain pills are LOCAL state. Switching chains does NOT mutate
-   any global STATE — it just switches _exploreChain.
+   Token logos:      logoURI from token list → Trust Wallet asset CDN
+   Chain logos:      Trust Wallet chain CDN  (pills + row badge)
+
+   CHAIN FILTER:
+   ─────────────
+   Image pills: chain logo + short name.
+   Updates _exploreChain only. Never touches STATE.network.
+
+   NAVIGATION:
+   ─────────────
+   Every tap → setState({ token: address, tokenChainId: chainId })
+   state:token listener in app.html owns all navigation.
 
    UNCHAINED9. Built by Waeven Xrysmond.
 ═══════════════════════════════════════════════════════════ */
@@ -24,70 +35,40 @@
   'use strict';
 
   /* ════════════════════════════════════════════════════════
-     CONSTANTS
+     CHAIN CONFIG
   ════════════════════════════════════════════════════════ */
-  var CHAIN_NAMES = {
-    1:      'Ethereum',
-    10:     'Optimism',
-    56:     'BNB Chain',
-    130:    'Unichain',
-    137:    'Polygon',
-    8453:   'Base',
-    42161:  'Arbitrum',
-    43114:  'Avalanche',
-  };
-
-  var CHAIN_COLORS = {
-    1:      '#627EEA',
-    10:     '#FF0420',
-    56:     '#F0B90B',
-    130:    '#FC72FF',
-    137:    '#8247E5',
-    8453:   '#0052FF',
-    42161:  '#12AAFF',
-    43114:  '#E84142',
-  };
-
-  /*
-   * CoinGecko category slugs per chain.
-   * Used in /coins/markets?category= for chain-specific token lists.
-   * Verified at coingecko.com/en/categories/<slug>.
-   * null = no dedicated category; omit param → global top 100.
-   */
-  var CHAIN_CATEGORY = {
-    1:      'ethereum-ecosystem',
-    10:     'optimism-ecosystem',
-    56:     'binance-smart-chain',
-    130:    null,                  /* Unichain — no CoinGecko category yet */
-    137:    'polygon-ecosystem',
-    8453:   'base-ecosystem',
-    42161:  'arbitrum-ecosystem',
-    43114:  'avalanche-ecosystem',
-  };
-
-  /* CoinGecko native token ID per chain — to auto-assign address='NATIVE' */
-  var CHAIN_NATIVE_CGID = {
-    1:      'ethereum',
-    10:     'ethereum',
-    56:     'binancecoin',
-    130:    'ethereum',
-    137:    'matic-network',
-    8453:   'ethereum',
-    42161:  'ethereum',
-    43114:  'avalanche-2',
+  var CHAINS = {
+    1:     { name: 'Ethereum',  short: 'ETH',  color: '#627EEA', llama: 'ethereum',  tw: 'ethereum',   cgid: 'coingecko:ethereum',      nSym: 'ETH',  nName: 'Ethereum'  },
+    10:    { name: 'Optimism',  short: 'OP',   color: '#FF0420', llama: 'optimism',  tw: 'optimism',   cgid: 'coingecko:ethereum',      nSym: 'ETH',  nName: 'Ethereum'  },
+    56:    { name: 'BNB Chain', short: 'BNB',  color: '#F0B90B', llama: 'bsc',       tw: 'smartchain', cgid: 'coingecko:binancecoin',   nSym: 'BNB',  nName: 'BNB'       },
+    130:   { name: 'Unichain',  short: 'UNI',  color: '#FC72FF', llama: 'unichain',  tw: null,         cgid: 'coingecko:ethereum',      nSym: 'ETH',  nName: 'Ethereum'  },
+    137:   { name: 'Polygon',   short: 'POL',  color: '#8247E5', llama: 'polygon',   tw: 'polygon',    cgid: 'coingecko:matic-network', nSym: 'POL',  nName: 'Polygon'   },
+    8453:  { name: 'Base',      short: 'BASE', color: '#0052FF', llama: 'base',      tw: 'base',       cgid: 'coingecko:ethereum',      nSym: 'ETH',  nName: 'Ethereum'  },
+    42161: { name: 'Arbitrum',  short: 'ARB',  color: '#12AAFF', llama: 'arbitrum',  tw: 'arbitrum',   cgid: 'coingecko:ethereum',      nSym: 'ETH',  nName: 'Ethereum'  },
+    43114: { name: 'Avalanche', short: 'AVAX', color: '#E84142', llama: 'avax',      tw: 'avalanche',  cgid: 'coingecko:avalanche-2',   nSym: 'AVAX', nName: 'Avalanche' },
   };
 
   var STABLE_SYMBOLS = {
     USDC:1, USDT:1, DAI:1, FRAX:1, TUSD:1, BUSD:1, LUSD:1,
     PYUSD:1, USDE:1, USDBC:1, GUSD:1, SUSD:1, CRVUSD:1,
     MKUSD:1, DOLA:1, AGEUR:1, EURC:1, USDP:1, FDUSD:1, USDS:1,
+    USDD:1, CUSD:1, EURS:1, SEUR:1, MIMATIC:1, ALUSD:1,
   };
 
-  var CACHE_TTL_MS = 5 * 60 * 1000;  /* 5 minutes per chain */
+  var TOKEN_LIST_URL = 'https://tokens.uniswap.org';
+  var LLAMA_PRICES   = 'https://coins.llama.fi/prices/current/';
+  var LLAMA_PCT      = 'https://coins.llama.fi/percentage/';
+  var TW_CHAIN_LOGO  = 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/{f}/info/logo.png';
+  var TW_ASSET_LOGO  = 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/{f}/assets/{a}/logo.png';
+
+  var PRICE_TTL  = 2 * 60 * 1000;          /* 2 min — re-fetch prices */
+  var LIST_TTL   = 24 * 60 * 60 * 1000;    /* 24 h  — token list */
+  var MAX_TOKENS = 100;                     /* per chain */
+  var BATCH      = 50;                      /* DeFiLlama coins per request */
 
   /* ════════════════════════════════════════════════════════
      MODULE STATE
-     All local — nothing here writes to global STATE.
+     Everything local. Nothing here writes to global STATE.
   ════════════════════════════════════════════════════════ */
   var _mounted      = false;
   var _container    = null;
@@ -98,185 +79,265 @@
   var _search       = '';
   var _debounce     = null;
 
-  /* Per-chain cache */
-  var _cache       = {};   /* { chainId: token[] }  */
-  var _cacheTime   = {};   /* { chainId: Date.now() at fetch } */
-  var _fetchingFor = {};   /* { chainId: Promise }  — deduplicates in-flight requests */
+  var _listData     = null;   /* raw Uniswap token array (all chains) */
+  var _listTime     = 0;      /* when it was fetched */
+  var _byChain      = {};     /* { chainId: Token[] }  — skeleton tokens, no prices yet */
+
+  var _cache        = {};     /* { chainId: { tokens: Token[], at: number } } */
+  var _flying       = {};     /* { chainId: Promise } — deduplicate in-flight */
 
   /* ════════════════════════════════════════════════════════
-     ACCESSORS
+     URL HELPERS
   ════════════════════════════════════════════════════════ */
-  function getCachedData(chainId) {
-    var age = Date.now() - (_cacheTime[chainId] || 0);
-    if (_cache[chainId] && age < CACHE_TTL_MS) return _cache[chainId];
-    return null;
+  function chainLogoUrl(chainId) {
+    var c = CHAINS[chainId];
+    if (!c || !c.tw) return '';
+    return TW_CHAIN_LOGO.replace('{f}', c.tw);
   }
 
-  function getActiveNetworks() {
-    return (window.STATE && STATE.settings && STATE.settings.activeNetworks) || [1];
+  function tokenLogoUrl(tok) {
+    if (tok.logoURI) return tok.logoURI;
+    var c = CHAINS[tok.chainId];
+    if (!c || !c.tw || tok.address === 'NATIVE') return '';
+    return TW_ASSET_LOGO.replace('{f}', c.tw).replace('{a}', tok.address);
   }
 
-  function getWalletChain() {
-    return (window.STATE && STATE.network) || 1;
+  /* DeFiLlama coin ID for a token */
+  function llamaKey(tok) {
+    if (tok.address === 'NATIVE') {
+      var c = CHAINS[tok.chainId];
+      return c ? c.cgid : null;
+    }
+    var cfg = CHAINS[tok.chainId];
+    if (!cfg) return null;
+    return cfg.llama + ':' + tok.address.toLowerCase();
   }
 
   /* ════════════════════════════════════════════════════════
-     COINGECKO FETCH  (lazy, per chain, cached 5 min)
-     Returns Promise<token[]> — resolves from cache when fresh.
+     FETCH UNISWAP TOKEN LIST  (cached 24h in localStorage)
   ════════════════════════════════════════════════════════ */
-  function fetchChain(chainId) {
-    /* Return cached data immediately if fresh */
-    var cached = getCachedData(chainId);
-    if (cached) return Promise.resolve(cached);
+  function fetchTokenList() {
+    var now = Date.now();
 
-    /* Deduplicate in-flight requests for the same chain */
-    if (_fetchingFor[chainId]) return _fetchingFor[chainId];
+    /* In-memory hit */
+    if (_listData && (now - _listTime) < LIST_TTL) {
+      return Promise.resolve(_listData);
+    }
 
-    var category   = CHAIN_CATEGORY[chainId] || null;
-    var nativeCgId = CHAIN_NATIVE_CGID[chainId] || null;
-
-    var url = 'https://api.coingecko.com/api/v3/coins/markets'
-      + '?vs_currency=usd'
-      + '&order=market_cap_desc'
-      + '&per_page=100'
-      + '&page=1'
-      + '&sparkline=false'
-      + (category ? '&category=' + encodeURIComponent(category) : '');
-
-    var promise = fetch(url, { headers: { Accept: 'application/json' } })
-      .then(function (res) {
-        if (res.status === 429) {
-          /* Rate limited — keep stale data if we have it */
-          console.warn('[explore.js] CoinGecko rate limited on chain', chainId);
-          var stale = _cache[chainId];
-          if (stale) return stale;
-          throw new Error('Rate limited and no cached data');
+    /* localStorage hit */
+    try {
+      var raw = localStorage.getItem('obsideum:tokenlist:v2');
+      if (raw) {
+        var p = JSON.parse(raw);
+        if (p && p.t && (now - p.t) < LIST_TTL && Array.isArray(p.d)) {
+          _listData = p.d;
+          _listTime = p.t;
+          return Promise.resolve(_listData);
         }
-        if (!res.ok) throw new Error('CoinGecko HTTP ' + res.status);
-        return res.json();
-      })
-      .then(function (coins) {
-        if (!Array.isArray(coins)) throw new Error('Response is not an array');
+      }
+    } catch (_) {}
 
-        /* Resolve address from KNOWN_ADDRESSES (window.KNOWN_ADDRESSES set by market.js) */
-        var knownAddrs = window.KNOWN_ADDRESSES || {};
-
-        var tokens = coins.map(function (c) {
-          var addr = null;
-          if (c.id === nativeCgId) {
-            addr = 'NATIVE';
-          } else {
-            var k = knownAddrs[c.id];
-            if (k && k[chainId]) addr = k[chainId];
-          }
-          return {
-            id:        c.id,
-            symbol:    (c.symbol || '').toUpperCase(),
-            name:      c.name   || '',
-            image:     c.image  || '',
-            price:     typeof c.current_price               === 'number' ? c.current_price               : null,
-            change24h: typeof c.price_change_percentage_24h === 'number' ? c.price_change_percentage_24h : null,
-            volume24h: typeof c.total_volume                === 'number' ? c.total_volume                : null,
-            marketCap: typeof c.market_cap                  === 'number' ? c.market_cap                  : null,
-            rank:      c.market_cap_rank || null,
-            address:   addr,
-          };
-        });
-
-        _cache[chainId]     = tokens;
-        _cacheTime[chainId] = Date.now();
-        return tokens;
+    return fetch(TOKEN_LIST_URL, { headers: { Accept: 'application/json' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('Token list HTTP ' + r.status);
+        return r.json();
       })
-      .catch(function (err) {
-        console.warn('[explore.js] fetchChain', chainId, err.message);
-        return _cache[chainId] || [];
-      })
-      .finally(function () {
-        delete _fetchingFor[chainId];
+      .then(function (data) {
+        if (!data || !Array.isArray(data.tokens)) throw new Error('Malformed token list');
+        _listData = data.tokens;
+        _listTime = now;
+        try {
+          localStorage.setItem('obsideum:tokenlist:v2', JSON.stringify({ t: now, d: data.tokens }));
+        } catch (_) {}
+        return _listData;
+      });
+  }
+
+  /* ════════════════════════════════════════════════════════
+     BUILD TOKEN ARRAY FOR ONE CHAIN
+     Native first, then ERC-20s from Uniswap list.
+     No prices yet — those come from DeFiLlama.
+  ════════════════════════════════════════════════════════ */
+  function tokensForChain(chainId) {
+    if (_byChain[chainId]) return _byChain[chainId];
+    var cfg = CHAINS[chainId];
+    if (!cfg || !_listData) return [];
+
+    var erc20 = _listData
+      .filter(function (t) { return t.chainId === Number(chainId) && t.address; })
+      .slice(0, MAX_TOKENS - 1)
+      .map(function (t) {
+        return {
+          address:   t.address,
+          symbol:    (t.symbol || '').toUpperCase(),
+          name:      t.name   || '',
+          decimals:  t.decimals || 18,
+          logoURI:   t.logoURI  || '',
+          chainId:   Number(chainId),
+          price:     null,
+          change24h: null,
+        };
       });
 
-    _fetchingFor[chainId] = promise;
-    return promise;
+    var native = {
+      address:   'NATIVE',
+      symbol:    cfg.nSym,
+      name:      cfg.nName,
+      decimals:  18,
+      logoURI:   chainLogoUrl(chainId),  /* chain logo doubles as native token logo */
+      chainId:   Number(chainId),
+      price:     null,
+      change24h: null,
+    };
+
+    var result = [native].concat(erc20);
+    _byChain[chainId] = result;
+    return result;
+  }
+
+  /* ════════════════════════════════════════════════════════
+     DEFILLAMA PRICES  (batch GET, no rate limit)
+  ════════════════════════════════════════════════════════ */
+  function fetchPrices(tokens) {
+    var keys = tokens.map(llamaKey).filter(Boolean);
+    if (!keys.length) return Promise.resolve({});
+
+    var batches = [], i;
+    for (i = 0; i < keys.length; i += BATCH) {
+      batches.push(keys.slice(i, i + BATCH));
+    }
+
+    return Promise.all(batches.map(function (b) {
+      return fetch(LLAMA_PRICES + b.join(',') + '?searchWidth=4h', {
+        headers: { Accept: 'application/json' },
+      })
+        .then(function (r) { return r.ok ? r.json() : { coins: {} }; })
+        .then(function (d) { return (d && d.coins) || {}; })
+        .catch(function () { return {}; });
+    })).then(function (results) {
+      return results.reduce(function (acc, r) { return Object.assign(acc, r); }, {});
+    });
+  }
+
+  /* ════════════════════════════════════════════════════════
+     DEFILLAMA 24H CHANGE  (batch GET)
+  ════════════════════════════════════════════════════════ */
+  function fetchChanges(tokens) {
+    var keys = tokens.map(llamaKey).filter(Boolean);
+    if (!keys.length) return Promise.resolve({});
+
+    var batches = [], i;
+    for (i = 0; i < keys.length; i += BATCH) {
+      batches.push(keys.slice(i, i + BATCH));
+    }
+
+    return Promise.all(batches.map(function (b) {
+      return fetch(LLAMA_PCT + b.join(',') + '?period=24h', {
+        headers: { Accept: 'application/json' },
+      })
+        .then(function (r) { return r.ok ? r.json() : { coins: {} }; })
+        .then(function (d) { return (d && d.coins) || {}; })
+        .catch(function () { return {}; });
+    })).then(function (results) {
+      return results.reduce(function (acc, r) { return Object.assign(acc, r); }, {});
+    });
   }
 
   /* ════════════════════════════════════════════════════════
      ENSURE DATA + RENDER
-     Fetches if needed, then calls update().
-     Shows skeleton while fetching.
   ════════════════════════════════════════════════════════ */
   function ensureAndRender(chainId) {
     var listEl = _container && _container.querySelector('#explore-list');
     if (!listEl) return;
 
-    var cached = getCachedData(chainId);
-    if (cached) {
+    var now    = Date.now();
+    var cached = _cache[chainId];
+
+    /* Fresh cache → render immediately */
+    if (cached && (now - cached.at) < PRICE_TTL) {
       update();
       return;
     }
 
-    renderSkeleton(listEl);
+    /* Show skeleton only on first load (no stale data) */
+    if (!cached) renderSkeleton(listEl);
 
-    fetchChain(chainId).then(function () {
-      /* Only render if the user hasn't switched away while fetching */
-      if (_exploreChain === chainId && _container) {
-        markPillHasData(chainId);
-        update();
-      }
-    });
+    /* Deduplicate in-flight requests */
+    if (_flying[chainId]) return;
+
+    var p = fetchTokenList()
+      .then(function () {
+        var tokens = tokensForChain(chainId);
+        if (!tokens.length) return [];
+
+        return Promise.all([
+          fetchPrices(tokens),
+          fetchChanges(tokens),
+        ]).then(function (results) {
+          var prices  = results[0];
+          var changes = results[1];
+
+          return tokens.map(function (tok) {
+            var key  = llamaKey(tok);
+            var pe   = key ? prices[key]  : null;
+            var chg  = key ? changes[key] : null;
+            return Object.assign({}, tok, {
+              price:     (pe && typeof pe.price === 'number') ? pe.price : null,
+              change24h: typeof chg === 'number' ? chg : null,
+            });
+          });
+        });
+      })
+      .then(function (merged) {
+        _cache[chainId] = { tokens: merged, at: Date.now() };
+        if (_exploreChain === Number(chainId) && _container) {
+          markPillLoaded(chainId);
+          update();
+        }
+      })
+      .catch(function (err) {
+        console.warn('[explore] chain', chainId, err.message || err);
+        var el = _container && _container.querySelector('#explore-list');
+        if (el && _exploreChain === Number(chainId)) renderError(el);
+      })
+      .finally(function () { delete _flying[chainId]; });
+
+    _flying[chainId] = p;
   }
 
   /* ════════════════════════════════════════════════════════
-     FILTER + SORT PIPELINE
+     FILTER + SORT
   ════════════════════════════════════════════════════════ */
   function applyFilters(tokens) {
     var q = _search.trim().toLowerCase();
 
     if (q) {
       tokens = tokens.filter(function (t) {
-        return t.name.toLowerCase().indexOf(q) > -1
+        return t.name.toLowerCase().indexOf(q)   > -1
             || t.symbol.toLowerCase().indexOf(q) > -1;
       });
     }
 
-    if (_category === 'stables') {
-      tokens = tokens.filter(function (t) { return STABLE_SYMBOLS[t.symbol]; });
-    } else if (_category === 'gainers') {
-      tokens = tokens.filter(function (t) {
-        return t.change24h !== null && t.change24h > 0;
-      });
-    } else if (_category === 'losers') {
-      tokens = tokens.filter(function (t) {
-        return t.change24h !== null && t.change24h < 0;
-      });
-    }
+    if      (_category === 'stables') { tokens = tokens.filter(function (t) { return STABLE_SYMBOLS[t.symbol]; }); }
+    else if (_category === 'gainers') { tokens = tokens.filter(function (t) { return t.change24h !== null && t.change24h > 0; }); }
+    else if (_category === 'losers')  { tokens = tokens.filter(function (t) { return t.change24h !== null && t.change24h < 0; }); }
 
     var out = tokens.slice();
 
-    if (_category === 'trending') {
-      out.sort(function (a, b) {
-        return Math.abs(b.change24h || 0) - Math.abs(a.change24h || 0);
-      });
-    } else if (_category === 'gainers') {
-      out.sort(function (a, b) { return (b.change24h || 0) - (a.change24h || 0); });
-    } else if (_category === 'losers') {
-      out.sort(function (a, b) { return (a.change24h || 0) - (b.change24h || 0); });
-    } else if (_sortCol === 'price') {
-      out.sort(function (a, b) {
-        var d = (b.price || 0) - (a.price || 0);
-        return _sortDir === 'asc' ? -d : d;
-      });
+    if      (_category === 'trending') { out.sort(function (a, b) { return Math.abs(b.change24h || 0) - Math.abs(a.change24h || 0); }); }
+    else if (_category === 'gainers')  { out.sort(function (a, b) { return (b.change24h || 0) - (a.change24h || 0); }); }
+    else if (_category === 'losers')   { out.sort(function (a, b) { return (a.change24h || 0) - (b.change24h || 0); }); }
+    else if (_sortCol === 'price') {
+      out.sort(function (a, b) { var d = (b.price || 0) - (a.price || 0); return _sortDir === 'asc' ? -d : d; });
     } else if (_sortCol === 'change') {
-      out.sort(function (a, b) {
-        var d = (b.change24h || 0) - (a.change24h || 0);
-        return _sortDir === 'asc' ? -d : d;
-      });
+      out.sort(function (a, b) { var d = (b.change24h || 0) - (a.change24h || 0); return _sortDir === 'asc' ? -d : d; });
     }
 
     return out;
   }
 
   /* ════════════════════════════════════════════════════════
-     FORMATTING
+     FORMATTERS
   ════════════════════════════════════════════════════════ */
   function fmtUSD(v) {
     if (v === null || v === undefined || isNaN(v)) return '—';
@@ -294,43 +355,70 @@
     return (c >= 0 ? '+' : '') + c.toFixed(2) + '%';
   }
 
-  function escHtml(s) {
+  function esc(s) {
     return String(s || '')
       .replace(/&/g,'&amp;').replace(/</g,'&lt;')
       .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
   /* ════════════════════════════════════════════════════════
+     CHAIN BADGE  (14px circle pinned to token logo)
+  ════════════════════════════════════════════════════════ */
+  function chainBadge(chainId) {
+    var cfg = CHAINS[chainId] || {};
+    var url = chainLogoUrl(chainId);
+    if (url) {
+      return '<img class="ex-badge" src="' + esc(url) + '" alt=""'
+        + ' onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
+        + '<div class="ex-badge ex-badge-fb" style="background:' + esc(cfg.color || '#888') + ';display:none">'
+        + esc((cfg.short || '?')[0]) + '</div>';
+    }
+    return '<div class="ex-badge ex-badge-fb" style="background:' + esc(cfg.color || '#888') + '">'
+      + esc((cfg.short || '?')[0]) + '</div>';
+  }
+
+  /* ════════════════════════════════════════════════════════
      ROW HTML
   ════════════════════════════════════════════════════════ */
-  function buildRowHtml(entry) {
-    var chgValid = entry.change24h !== null && !isNaN(entry.change24h);
-    var dir      = chgValid ? (entry.change24h > 0 ? 'up' : entry.change24h < 0 ? 'dn' : '') : '';
-    var arrow    = dir === 'up' ? '▲' : dir === 'dn' ? '▼' : '';
-    var sym0     = escHtml((entry.symbol || '?')[0]);
+  function buildRow(tok) {
+    var chgOk = tok.change24h !== null && !isNaN(tok.change24h);
+    var dir   = chgOk ? (tok.change24h > 0 ? 'up' : tok.change24h < 0 ? 'dn' : '') : '';
+    var arrow = dir === 'up' ? '▲' : dir === 'dn' ? '▼' : '';
+    var logo  = tokenLogoUrl(tok);
+    var fb    = esc((tok.symbol || '?')[0]);
 
     return [
-      '<div class="asset-row explore-row" data-cgid="' + escHtml(entry.id) + '"',
-        ' role="button" tabindex="0" aria-label="' + escHtml(entry.name) + '">',
+      '<div class="asset-row explore-row"',
+        ' data-addr="' + esc(tok.address) + '"',
+        ' data-chain="' + tok.chainId + '"',
+        ' role="button" tabindex="0"',
+        ' aria-label="' + esc(tok.name) + '">',
 
-        '<div class="asset-row-logo-wrap">',
-          entry.image
-            ? '<img class="asset-row-logo" src="' + escHtml(entry.image) + '" alt="' + escHtml(entry.symbol) + '"'
+        /* Logo + chain badge */
+        '<div class="asset-row-logo-wrap explore-logo-wrap">',
+          logo
+            ? '<img class="asset-row-logo" src="' + esc(logo) + '" alt="' + esc(tok.symbol) + '"'
                 + ' onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
             : '',
-          '<div class="asset-row-logo-fallback"' + (entry.image ? ' style="display:none"' : '') + '>' + sym0 + '</div>',
+          '<div class="asset-row-logo-fallback"' + (logo ? ' style="display:none"' : '') + '>' + fb + '</div>',
+          /* Chain badge */
+          '<div class="explore-badge-wrap">',
+            chainBadge(tok.chainId),
+          '</div>',
         '</div>',
 
+        /* Identity */
         '<div class="asset-row-identity">',
-          '<span class="asset-row-name">' + escHtml(entry.name) + '</span>',
-          '<span class="asset-row-chain">' + escHtml(entry.symbol) + '</span>',
+          '<span class="asset-row-name">' + esc(tok.name) + '</span>',
+          '<span class="asset-row-chain">' + esc(tok.symbol) + '</span>',
         '</div>',
 
+        /* Price + change */
         '<div class="asset-row-price">',
-          '<span class="asset-row-usd">' + fmtUSD(entry.price) + '</span>',
+          '<span class="asset-row-usd">' + fmtUSD(tok.price) + '</span>',
           '<span class="asset-row-change ' + dir + '">',
-            (arrow ? '<span class="explore-arrow">' + arrow + '</span>' : ''),
-            chgValid ? fmtChange(entry.change24h) : '—',
+            arrow ? '<span class="explore-arrow">' + arrow + '</span>' : '',
+            chgOk ? fmtChange(tok.change24h) : '—',
           '</span>',
         '</div>',
 
@@ -339,10 +427,10 @@
   }
 
   /* ════════════════════════════════════════════════════════
-     SKELETON
+     STATES
   ════════════════════════════════════════════════════════ */
   function renderSkeleton(listEl) {
-    var ws = [72, 88, 60, 95, 78, 110, 64, 82];
+    var ws = [72, 88, 60, 95, 78, 110, 64, 82, 70, 90];
     listEl.innerHTML = ws.map(function (w) {
       return [
         '<div class="asset-row" style="pointer-events:none">',
@@ -362,8 +450,21 @@
     }).join('');
   }
 
+  function renderError(listEl) {
+    listEl.innerHTML = [
+      '<div class="explore-empty">',
+        '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--dim)"',
+          ' stroke-width="1.5" stroke-linecap="round" aria-hidden="true">',
+          '<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>',
+        '</svg>',
+        '<span>Failed to load token data.</span>',
+        '<span style="font-size:.54rem;opacity:.45">Check connection and try again.</span>',
+      '</div>',
+    ].join('');
+  }
+
   /* ════════════════════════════════════════════════════════
-     UPDATE — renders from local cache for _exploreChain
+     MAIN RENDER
   ════════════════════════════════════════════════════════ */
   function update() {
     if (!_mounted || !_container) return;
@@ -372,106 +473,79 @@
     var countEl = _container.querySelector('#explore-count');
     if (!listEl) return;
 
-    var data = getCachedData(_exploreChain);
-    if (!data) {
-      /* No data yet — caller should have shown skeleton already */
-      return;
-    }
+    var cached = _cache[_exploreChain];
+    if (!cached || !cached.tokens) return;
 
-    var filtered = applyFilters(data);
+    var filtered = applyFilters(cached.tokens);
 
     if (countEl) countEl.textContent = filtered.length ? '(' + filtered.length + ')' : '';
 
     if (!filtered.length) {
-      listEl.innerHTML = '<div class="explore-empty">No tokens match your search.</div>';
+      listEl.innerHTML = '<div class="explore-empty"><span>No tokens match.</span></div>';
       return;
     }
 
-    listEl.innerHTML = filtered.map(buildRowHtml).join('');
+    listEl.innerHTML = filtered.map(buildRow).join('');
 
-    /* Wire token taps */
+    /* Wire taps — EVERY row has a real address, all are tappable */
     listEl.querySelectorAll('.explore-row').forEach(function (row) {
-      row.addEventListener('click', function () {
-        var cgid  = row.dataset.cgid;
-        var data  = getCachedData(_exploreChain);
-        if (!data) return;
-
-        var entry = data.find(function (t) { return t.id === cgid; });
-        if (!entry) return;
-
-        /* Resolve address. For known addresses this is synchronous (no HTTP).
-         * For unknowns it may do one CoinGecko /coins/{id} fetch. */
-        window.resolveMarketAddress(entry, _exploreChain).then(function (addr) {
-          if (!addr) return; /* Could not resolve — do nothing */
-
-          /* Pass full CoinGecko metadata alongside the address.
-           * buildPanel in app.html reads STATE.tokenMeta first so it never
-           * falls through to getToken() (which only knows STATE.tokenList,
-           * i.e. the active wallet chain). This makes every explore token
-           * render correctly regardless of which chain it lives on. */
-          setState({
-            tokenMeta: {
-              address:   addr,
-              name:      entry.name,
-              symbol:    entry.symbol,
-              image:     entry.image,       /* CoinGecko CDN — always works cross-chain */
-              price:     entry.price,
-              change24h: entry.change24h,
-              marketCap: entry.marketCap,
-              volume24h: entry.volume24h,
-            },
-            token:        addr,
-            tokenChainId: _exploreChain,
-          });
-        });
-      });
-
+      function tap() {
+        var addr    = row.dataset.addr;
+        var chainId = Number(row.dataset.chain);
+        if (!addr) return;
+        setState({ token: addr, tokenChainId: chainId });
+      }
+      row.addEventListener('click', tap);
       row.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          row.click();
-        }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tap(); }
       });
     });
 
-    /* Update sort arrow classes */
-    if (_container) {
-      _container.querySelectorAll('.explore-col-sortable').forEach(function (col) {
-        var c = col.dataset.col;
-        col.classList.toggle('sorted-asc',  _sortCol === c && _sortDir === 'asc');
-        col.classList.toggle('sorted-desc', _sortCol === c && _sortDir === 'desc');
-      });
-    }
+    /* Sort arrow state */
+    _container.querySelectorAll('.explore-col-sortable').forEach(function (col) {
+      var c = col.dataset.col;
+      col.classList.toggle('sort-asc',  _sortCol === c && _sortDir === 'asc');
+      col.classList.toggle('sort-desc', _sortCol === c && _sortDir === 'desc');
+    });
   }
 
   /* ════════════════════════════════════════════════════════
-     CHAIN PILLS HTML
+     CHAIN PILLS  (image + short name)
   ════════════════════════════════════════════════════════ */
-  function buildChainPills() {
-    var nets = getActiveNetworks();
+  function buildPillsHtml() {
+    var nets = (window.STATE && STATE.settings && STATE.settings.activeNetworks) || [1];
     return nets.map(function (cid) {
-      var color  = CHAIN_COLORS[cid] || '#888';
+      var cfg    = CHAINS[cid] || {};
       var active = cid === _exploreChain;
+      var url    = chainLogoUrl(cid);
+      var logoHtml = url
+        ? '<img class="ex-pill-img" src="' + esc(url) + '" alt=""'
+            + ' onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">'
+            + '<div class="ex-pill-img ex-pill-fb" style="background:' + esc(cfg.color || '#888') + ';display:none">'
+            + esc((cfg.short || '?')[0]) + '</div>'
+        : '<div class="ex-pill-img ex-pill-fb" style="background:' + esc(cfg.color || '#888') + '">'
+            + esc((cfg.short || '?')[0]) + '</div>';
+
       return [
         '<button class="explore-chain-pill' + (active ? ' active' : '') + '"',
           ' data-chain="' + cid + '"',
-          ' style="--pill-color:' + color + '"',
           ' aria-pressed="' + active + '"',
-          ' aria-label="' + escHtml(CHAIN_NAMES[cid] || 'Chain ' + cid) + '">',
-          escHtml(CHAIN_NAMES[cid] || 'Chain ' + cid),
+          ' aria-label="' + esc(cfg.name || 'Chain ' + cid) + '">',
+          logoHtml,
+          '<span class="ex-pill-name">' + esc(cfg.short || cfg.name || '') + '</span>',
         '</button>',
       ].join('');
     }).join('');
   }
 
-  function markPillHasData(chainId) {
+  function markPillLoaded(chainId) {
     if (!_container) return;
-    var pill = _container.querySelector('[data-chain="' + chainId + '"]');
-    if (pill) pill.classList.add('has-data');
+    var p = _container.querySelector('.explore-chain-pill[data-chain="' + chainId + '"]');
+    if (p) p.classList.add('has-data');
   }
 
   /* ════════════════════════════════════════════════════════
-     SORT ARROW SVG
+     SORT ARROW
   ════════════════════════════════════════════════════════ */
   function sortArrow() {
     return [
@@ -491,20 +565,19 @@
   ════════════════════════════════════════════════════════ */
   function mountExplore(container) {
     if (!container) return;
-
-    if (!_exploreChain) _exploreChain = getWalletChain();
+    if (!_exploreChain) _exploreChain = (window.STATE && STATE.network) || 1;
 
     container.innerHTML = [
       '<div class="explore-view">',
 
+        /* Search bar */
         '<div class="explore-search-row">',
           '<div class="explore-search-wrap">',
             '<svg class="explore-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"',
               ' stroke="var(--dim)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"',
               ' aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M21 21l-4-4"/></svg>',
             '<input class="explore-search-input" id="explore-search" type="text"',
-              ' placeholder="Search name or symbol…"',
-              ' value="' + escHtml(_search) + '"',
+              ' placeholder="Search tokens…" value="' + esc(_search) + '"',
               ' autocomplete="off" autocorrect="off" spellcheck="false" inputmode="search"',
               ' aria-label="Search tokens">',
             '<button class="explore-search-clear" id="explore-search-clear"',
@@ -516,22 +589,25 @@
           '</div>',
         '</div>',
 
+        /* Chain pills */
         '<div class="explore-chain-pills" id="explore-chain-pills"',
           ' role="group" aria-label="Filter by chain">',
-          buildChainPills(),
+          buildPillsHtml(),
         '</div>',
 
+        /* Category tabs */
         '<div class="explore-categories" role="tablist" aria-label="Token categories">',
           ['all','trending','gainers','losers','stables'].map(function (cat) {
-            var labels = { all:'All', trending:'Trending', gainers:'Gainers', losers:'Losers', stables:'Stablecoins' };
+            var L = { all:'All', trending:'Trending', gainers:'Gainers', losers:'Losers', stables:'Stablecoins' };
             return '<button class="explore-cat' + (_category === cat ? ' active' : '') + '"'
-              + ' data-cat="' + cat + '" role="tab">' + labels[cat] + '</button>';
+              + ' data-cat="' + cat + '" role="tab">' + L[cat] + '</button>';
           }).join(''),
         '</div>',
 
+        /* Column headers */
         '<div class="explore-col-header" aria-hidden="true">',
-          '<span class="explore-col-token">',
-            'TOKEN <span class="explore-count-badge" id="explore-count"></span>',
+          '<span class="explore-col-token">TOKEN',
+            ' <span class="explore-count-badge" id="explore-count"></span>',
           '</span>',
           '<span class="explore-col-sortable explore-col-price" data-col="price"',
             ' role="button" tabindex="0" aria-label="Sort by price">PRICE' + sortArrow() + '</span>',
@@ -547,11 +623,10 @@
     _container = container;
     _mounted   = true;
 
-    var listEl   = container.querySelector('#explore-list');
     var searchEl = container.querySelector('#explore-search');
     var clearEl  = container.querySelector('#explore-search-clear');
 
-    /* Wire search */
+    /* Search */
     searchEl.addEventListener('input', function () {
       _search = searchEl.value;
       clearEl.hidden = !_search;
@@ -563,7 +638,7 @@
       clearTimeout(_debounce); update(); searchEl.focus();
     });
 
-    /* Wire category tabs */
+    /* Categories */
     container.querySelectorAll('.explore-cat').forEach(function (btn) {
       btn.addEventListener('click', function () {
         if (_category === btn.dataset.cat) return;
@@ -575,49 +650,54 @@
       });
     });
 
-    /* Wire chain pills */
+    /* Chain pills */
     container.querySelectorAll('.explore-chain-pill').forEach(function (pill) {
       pill.addEventListener('click', function () {
         var cid = Number(pill.dataset.chain);
         if (cid === _exploreChain) return;
 
         _exploreChain = cid;
+        _category     = 'all';
+        _sortCol      = null;
+
         container.querySelectorAll('.explore-chain-pill').forEach(function (p) {
-          var active = Number(p.dataset.chain) === cid;
-          p.classList.toggle('active', active);
-          p.setAttribute('aria-pressed', String(active));
+          var on = Number(p.dataset.chain) === cid;
+          p.classList.toggle('active', on);
+          p.setAttribute('aria-pressed', String(on));
         });
+        container.querySelectorAll('.explore-cat').forEach(function (b) { b.classList.remove('active'); });
+        var allBtn = container.querySelector('[data-cat="all"]');
+        if (allBtn) allBtn.classList.add('active');
 
         ensureAndRender(cid);
       });
     });
 
-    /* Wire sort columns */
+    /* Sort columns */
     container.querySelectorAll('.explore-col-sortable').forEach(function (col) {
-      function handleSort() {
+      function sort() {
         var c = col.dataset.col;
-        _sortDir = (_sortCol === c && _sortDir === 'desc') ? 'asc' : 'desc';
-        _sortCol = c;
+        _sortDir  = (_sortCol === c && _sortDir === 'desc') ? 'asc' : 'desc';
+        _sortCol  = c;
         _category = 'all';
         container.querySelectorAll('.explore-cat').forEach(function (b) { b.classList.remove('active'); });
-        container.querySelector('[data-cat="all"]').classList.add('active');
+        var allBtn = container.querySelector('[data-cat="all"]');
+        if (allBtn) allBtn.classList.add('active');
         update();
       }
-      col.addEventListener('click', handleSort);
+      col.addEventListener('click', sort);
       col.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSort(); }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); sort(); }
       });
     });
 
-    /* Initial data load for the default chain */
+    /* Initial load */
     ensureAndRender(_exploreChain);
   }
 
   /* ════════════════════════════════════════════════════════
-     STATE LISTENERS
+     STATE LISTENER
   ════════════════════════════════════════════════════════ */
-
-  /* Tab activated */
   document.addEventListener('state:mobileTab', function (e) {
     if (e.detail !== 'explore') return;
     var container = document.getElementById('mobile-explore');
@@ -626,13 +706,14 @@
     if (!_mounted) {
       mountExplore(container);
     } else {
-      /* Re-fetch if stale; render from cache if fresh */
-      ensureAndRender(_exploreChain);
+      /* Re-fetch if prices are stale, render from cache if fresh */
+      var cached = _cache[_exploreChain];
+      if (!cached || (Date.now() - cached.at) >= PRICE_TTL) {
+        ensureAndRender(_exploreChain);
+      } else {
+        update();
+      }
     }
   });
-
-  /* NOTE: state:marketData listener removed.
-   * explore.js no longer depends on STATE.marketData.
-   * It owns its own fetch → _cache flow. */
 
 }());
