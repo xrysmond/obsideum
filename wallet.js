@@ -621,10 +621,9 @@ async function registerSubname(label)       { void label; throw new Error('Phase
 
 function wireProviderEvents(provider) {
   if (!provider || typeof provider.on !== 'function') return;
-  /* Guard: each provider instance only gets wired once.
-   * _buildPrivyBridge's useEffect re-runs on every render — without this,
-   * every re-render stacks a new set of accountsChanged / chainChanged /
-   * disconnect handlers on the same provider object. */
+  /* Guard — each provider only gets wired once.
+   * The provider init useEffect re-runs on every primaryAddr change;
+   * without this every re-render stacks duplicate event handlers. */
   if (provider._obsideumWired) return;
   provider._obsideumWired = true;
 
@@ -645,10 +644,9 @@ function wireProviderEvents(provider) {
 
   provider.on('disconnect', function () {
     /* EIP-1193 disconnect fires on network switches and when mobile browsers
-     * background the tab — it is NOT a reliable signal that the Privy session
-     * ended. Nulling the cached provider forces the next getSigner() call to
-     * re-fetch it, but STATE.connected is owned by Privy's authenticated flag
-     * only. Clearing it here caused the auto-disconnect bug. */
+     * background the tab — NOT a reliable signal that the Privy session ended.
+     * Null the provider so the next getSigner() re-fetches it, but do NOT
+     * touch STATE.connected — Privy's authenticated flag owns that. */
     window.privyProvider = null;
   });
 }
@@ -691,10 +689,10 @@ function _buildPrivyBridge(useEffect, usePrivy, useWallets) {
         ready:         ready,
         authenticated: authenticated,
         user:          user,
-        /* initOAuth — triggers a full-page redirect to the OAuth provider.
-         * No popup; works on Brave/mobile. Call: initOAuth({ provider: 'google' }) */
+        /* initOAuth — full-page redirect to OAuth provider.
+         * No popup. Works on Brave mobile. Usage: initOAuth({ provider: 'google' }) */
         initOAuth:     p.initOAuth,
-        /* Link methods — use when user is already authenticated */
+        /* Link methods — require an authenticated session */
         linkWallet:    p.linkWallet,
         linkGoogle:    p.linkGoogle,
         linkTwitter:   p.linkTwitter,
@@ -704,23 +702,25 @@ function _buildPrivyBridge(useEffect, usePrivy, useWallets) {
     });
 
     /* Provider init on connect / account switch */
+    /* Provider init on connect / account switch */
     useEffect(function () {
       if (!ready || !primaryAddr || !primaryWallet) return;
       var alive = true;
 
       primaryWallet.getEthereumProvider()
         .then(function (provider) {
-          if (!alive) return;
-          /* For external (injected) wallets — Brave, MetaMask, etc. —
-           * Privy returns a wrapped proxy of the wallet's EIP-1193 provider.
-           * On Android, this wrapper swallows eth_sendTransaction before it
-           * reaches the wallet's native confirmation UI. Use window.ethereum
-           * directly so Brave Wallet's bottom sheet actually fires.
-           * Embedded Privy wallets sign server-side and use their own
-           * provider — leave those untouched. */
+          /* For external (injected) wallets — Brave, MetaMask — Privy returns
+           * a wrapped proxy. On Android the wrapper suppresses eth_sendTransaction
+           * before it reaches Brave's native confirmation UI. Use window.ethereum
+           * directly so the bottom sheet actually fires.
+           * Embedded Privy wallets sign server-side — leave those untouched. */
           var isExternal  = primaryWallet.walletClientType !== 'privy';
           var useProvider = (isExternal && window.ethereum) ? window.ethereum : provider;
+
+          /* Set before alive check — never lose the provider on re-render */
           window.privyProvider = useProvider;
+
+          if (!alive) return;
           return Promise.all([
             useProvider.request({ method: 'eth_accounts' }),
             useProvider.request({ method: 'eth_chainId'  }),
@@ -811,87 +811,6 @@ async function initPrivy() {
 }
 
 /* ═══════════════════════════════════════
-   OAUTH CALLBACK HANDLER
-   Mirrors privy-io/examples oauth-login.js.
-   PrivyProvider processes the redirect params automatically on mount —
-   we just surface errors and clean the URL once it's done.
-═══════════════════════════════════════ */
-
-(function handleOAuthCallback() {
-  var params    = new URLSearchParams(window.location.search);
-  var code      = params.get('privy_oauth_code');
-  var state     = params.get('privy_oauth_state');
-  var provider  = params.get('privy_oauth_provider');
-  var error     = params.get('privy_oauth_error') || params.get('error');
-  var errDesc   = params.get('privy_oauth_error_description') || params.get('error_description');
-
-  if (error) {
-    _privyReady.then(function () {
-      if (typeof showToast === 'function') {
-        showToast('Login failed: ' + (errDesc || error), 'terr');
-      }
-    });
-    window.history.replaceState({}, '', window.location.pathname);
-    return;
-  }
-
-  if (!code || !state || !provider) return;
-
-  /* Callback params present — PrivyProvider will complete the OAuth flow
-   * on mount. Once Privy is ready, clean the URL so a hard-reload doesn't
-   * re-trigger the flow. */
-  _privyReady.then(function () {
-    window.history.replaceState({}, '', window.location.pathname);
-  });
-}());
-
-/* ═══════════════════════════════════════
-   SOCIAL LOGIN HELPERS
-   Uses initOAuth for a full-page redirect — no popup, no block on Brave mobile.
-   Exposed globally so wallet sheet buttons and any other UI can call them.
-   Pattern copied directly from privy-io/examples oauth-login.js loginWithOAuth().
-═══════════════════════════════════════ */
-
-async function connectWithOAuth(provider) {
-  await _privyReady;
-  if (!window._privyBridge || typeof window._privyBridge.initOAuth !== 'function') {
-    if (typeof showToast === 'function') showToast('Wallet service not ready. Try again.', 'terr');
-    return;
-  }
-  try {
-    await window._privyBridge.initOAuth({ provider: provider });
-  } catch (err) {
-    var msg = (err && err.message) ? err.message.toLowerCase() : '';
-    if (!msg.includes('cancel') && !msg.includes('reject') &&
-        !msg.includes('close')  && !msg.includes('dismiss')) {
-      console.error('[OBSIDEUM wallet] OAuth error:', err);
-      if (typeof showToast === 'function') showToast('Social login failed. Try again.', 'terr');
-    }
-  }
-}
-
-window.connectWithGoogle  = function () { return connectWithOAuth('google');  };
-window.connectWithTwitter = function () { return connectWithOAuth('twitter'); };
-window.connectWithOAuth   = connectWithOAuth;
-
-/* ═══════════════════════════════════════
-   VISIBILITY RE-VALIDATION  (Bug 3 — stale connected state)
-   When the user switches back to the tab after Privy's session expires in
-   the background, STATE.connected stays true but authenticated is false.
-   This listener catches that mismatch and clears the stale state.
-═══════════════════════════════════════ */
-
-document.addEventListener('visibilitychange', function () {
-  if (document.visibilityState !== 'visible') return;
-  if (!window._privyBridge) return;
-  if (window._privyBridge.authenticated === false && STATE.connected) {
-    console.log('[OBSIDEUM wallet] Stale session detected on focus — clearing state.');
-    window.privyProvider = null;
-    setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
-  }
-});
-
-/* ═══════════════════════════════════════
    PUBLIC API
 ═══════════════════════════════════════ */
 
@@ -920,22 +839,19 @@ async function connect() {
 async function disconnect() {
   closeWalletSheet();
   if (!window._privyBridge) {
-    /* Bridge not ready — clear local state only. No redirect. */
+    /* Bridge not ready — clear local state, no redirect */
     window.privyProvider = null;
     setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
     return;
   }
   try {
     await window._privyBridge.logout();
-    /* Success — PrivyBridge's logout-detection useEffect fires,
-     * sets authenticated=false, clears STATE. Nothing else needed. */
+    /* Privy's authenticated useEffect fires → clears STATE. Nothing else needed. */
   } catch (err) {
     console.error('[OBSIDEUM wallet] Logout error:', err);
     window.privyProvider = null;
     setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
   }
-  /* REMOVED: window.location.href = 'index.html' — this was the redirect bug.
-   * auth-manager.js pattern: logout clears state only, never navigates. */
 }
 
 /* ═══════════════════════════════════════
@@ -996,9 +912,9 @@ document.addEventListener('state:wallet', function () {
   if (c) mountAccountsTab(c);
 });
 
-/* Wallets array changed (connect or disconnect) — re-render list immediately.
- * state:wallet fires first but uses stale STATE.wallets; this catches the
- * wallets-sync useEffect that fires a frame later with the real array. */
+/* Wallets array changed — re-render list immediately.
+ * state:wallet fires first but reads stale STATE.wallets;
+ * this catches the wallets-sync useEffect that fires a frame later. */
 document.addEventListener('state:wallets', function () {
   if (_accountsOpen()) _renderWalletList();
 });
@@ -1007,6 +923,42 @@ document.addEventListener('state:wallets', function () {
 document.addEventListener('state:ensSubname', function () {
   if (_accountsOpen()) _renderENSSection();
 });
+
+/* ── Stale session detection ─────────────────────────────────────
+   Re-validates Privy auth when the tab regains focus.
+   Catches STATE.connected=true after session expired in background. */
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState !== 'visible') return;
+  if (!window._privyBridge) return;
+  if (window._privyBridge.authenticated === false && STATE.connected) {
+    window.privyProvider = null;
+    setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
+  }
+});
+
+/* ── Social login helpers ────────────────────────────────────────
+   initOAuth triggers a full-page redirect — no popup, works on Brave mobile.
+   Exposed globally so any UI element can call them. */
+async function connectWithOAuth(provider) {
+  await _privyReady;
+  if (!window._privyBridge || typeof window._privyBridge.initOAuth !== 'function') {
+    if (typeof showToast === 'function') showToast('Wallet service not ready. Try again.', 'terr');
+    return;
+  }
+  try {
+    await window._privyBridge.initOAuth({ provider: provider });
+  } catch (err) {
+    var msg = (err && err.message) ? err.message.toLowerCase() : '';
+    if (!msg.includes('cancel') && !msg.includes('reject') &&
+        !msg.includes('close')  && !msg.includes('dismiss')) {
+      console.error('[OBSIDEUM wallet] OAuth error:', err);
+      if (typeof showToast === 'function') showToast('Social login failed. Try again.', 'terr');
+    }
+  }
+}
+
+window.connectWithGoogle  = function () { return connectWithOAuth('google');  };
+window.connectWithTwitter = function () { return connectWithOAuth('twitter'); };
 
 /* ═══════════════════════════════════════
    PHASE 9G — ACCOUNTS TAB
@@ -1178,10 +1130,6 @@ function _setActiveWallet(index) {
 
   wallet.getEthereumProvider()
     .then(function (provider) {
-      /* Mirror the same external-wallet preference as _buildPrivyBridge:
-       * use window.ethereum directly for injected wallets so the native
-       * confirmation UI (Brave bottom sheet, MetaMask modal) is triggered
-       * when swap.js calls eth_sendTransaction. */
       var isExternal  = wallet.walletClientType !== 'privy';
       var useProvider = (isExternal && window.ethereum) ? window.ethereum : provider;
       _provider            = useProvider;
