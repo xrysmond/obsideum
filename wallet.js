@@ -751,16 +751,22 @@ function _buildPrivyBridge(useEffect, usePrivy, useWallets) {
       if (!authenticated) {
         window.privyProvider = null;
         if (STATE.connected) {
-          setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null });
+          /* wallets + activeWallet cleared here so _renderWalletList() sees an
+           * empty STATE immediately — not on the next Privy wallets-array tick. */
+          setState({ wallet: null, connected: false, ens: null, ensSubname: null, network: null, wallets: null, activeWallet: 0 });
         }
       }
     }, [ready, authenticated]);
 
     /* Expose full wallets array. Clamp restored activeWallet index to actual range.
      * loadSettings() may have restored an index that is now OOB (wallet removed between
-     * sessions). Clamp here — wallets.length is authoritative. */
+     * sessions). Clamp here — wallets.length is authoritative.
+     * Guard: authenticated — Privy's wallets array can briefly remain populated
+     * after logout (before the next React render clears it). Without this guard,
+     * the stale array would re-populate STATE.wallets and the accounts tab would
+     * show the disconnected wallet card again. */
     useEffect(function () {
-      if (ready && wallets) {
+      if (ready && authenticated && wallets) {
         var savedIdx = (window.STATE && STATE.activeWallet) || 0;
         var validIdx = (savedIdx >= 0 && savedIdx < wallets.length) ? savedIdx : 0;
         setState({ wallets: wallets, activeWallet: validIdx });
