@@ -1,76 +1,23 @@
-# OBSIDEUM — Uniswap Developer Feedback
-**ETHOnline 2026 · UNCHAINED9 · Built by Waeven Xrysmond**
+# OBSIDEUM — Uniswap Feedback
+Waeven Xrysmond · UNCHAINED9 · ETHOnline 2026
 
-Live: https://xrysmond.github.io/obsideum/
-Code: https://github.com/xrysmond/obsideum
-
----
-
-## What I built
-
-OBSIDEUM is a standalone DeFi trading interface built directly on Uniswap V3. No routing API in the middle. No abstraction layer between the app and the protocol.
-
-The integration covers:
-
-- QuoterV2 for price simulation across all three fee tiers (500, 3000, 10000 basis points)
-- Multi-hop routing through WETH and USDC when no direct pool exists between two tokens
-- The view quoter interface for gas-free quote simulation on supported chains
-- SwapRouter02 for execution across both single-hop and multi-hop paths
-- Native ETH handling with address substitution before quoting
-- Eight chains: Ethereum mainnet, Optimism, BNB Chain, Unichain, Polygon, Base, Arbitrum One, Avalanche
-- Uniswap V3 subgraphs on all eight chains for token discovery and price history
+https://xrysmond.github.io/obsideum/
+https://github.com/xrysmond/obsideum
 
 ---
 
-## What worked well
+I built OBSIDEUM, a trading interface that sits directly on top of Uniswap V3. I'm calling QuoterV2 for pricing and SwapRouter02 for execution across eight chains. No routing API. No wrapper. Just the contracts.
 
-The protocol is solid. Once integrated correctly it does exactly what it says on every chain.
+Overall the protocol is solid and I'm glad I built on it. The architecture makes sense. The fee tiers work. Multi-chain felt like a real design decision rather than something tacked on. Unichain being supported from day one was a nice surprise.
 
-Multi-chain support feels like a real feature, not an afterthought. Adding a new chain means adding contract addresses. The subgraph schema is consistent across chains which made token discovery straightforward. The fee tier system gives real price discovery. And having Unichain supported from launch is the right call.
+The part that genuinely cost me time was the documentation. Not because it's bad, but because it's written for people who already know Solidity and assumes you'll translate everything into JavaScript yourself.
 
-The separation between the quoter and the router is a clean architecture decision. Being able to simulate without touching state, then execute separately, made it simple to build a real-time quote UI without any unnecessary gas cost.
+The specific thing that got me: QuoterV2's quoteExactInput returns multiple values, not a single number. In ethers.js that comes back as a Result object and you have to access the amount as r[0] or r.amountOut. That's not mentioned anywhere in the docs. Every example either shows a Solidity interface or pseudocode. I had a bug where the whole multi-hop routing was silently broken for days because of this and I had no documentation to point me in the right direction. I eventually figured it out but it should have been a five minute read, not days of debugging.
 
----
+Same thing with path encoding for multi-hop swaps. The Solidity version is referenced but there's no JavaScript equivalent shown. And the difference between the view quoter and QuoterV2, specifically that one needs callStatic and the other doesn't because it's actually a view function, is never explained clearly anywhere.
 
-## Where the documentation fell short
+None of this is a protocol problem. The protocol does what it says. It's just that the documentation stops at the contract layer and leaves JavaScript developers to figure out the rest themselves. A single page with real ethers.js examples would fix most of this.
 
-These are specific gaps, not general complaints.
-
-**QuoterV2 returns tuples and the JavaScript documentation does not show this.**
-
-`quoteExactInputSingle` and `quoteExactInput` both return multiple values. In ethers.js v5 that comes back as a named Result object. You access the amount as `r[0]` or `r.amountOut`, not as a direct BigNumber. There is no example in the Uniswap documentation that shows a JavaScript developer how to handle this. Every example shows a Solidity interface or pseudocode. The actual ethers.js call with correct return value handling is not there.
-
-This is the most common integration mistake a JavaScript developer will make with QuoterV2 and the documentation gives you nothing to avoid it.
-
-**The view quoter and QuoterV2 are not documented as distinct interfaces.**
-
-The view quoter exists on most chains and its `quoteExactInput` and `quoteExactInputSingle` functions are declared as view, meaning you do not need `.callStatic`. QuoterV2 requires `.callStatic` because the function executes and reverts. This difference matters in ethers.js and there is no page that explains it clearly. There is also no chain-by-chain reference showing which chains support the view quoter and which require the standard QuoterV2 fallback.
-
-**Multi-hop path encoding is not shown in JavaScript.**
-
-The `abi.encodePacked(tokenA, fee, tokenB, fee, tokenC)` pattern is referenced but its JavaScript equivalent using `ethers.utils.solidityPack` is not shown anywhere in the documentation. It is something you figure out yourself by reading the Solidity and translating it, which should not be necessary.
-
----
-
-## What would fix it
-
-One documentation page dedicated to JavaScript developers. Not translated Solidity. Actual ethers.js code showing:
-
-- A complete `quoteExactInputSingle` call with struct input and proper tuple destructuring on the return
-- A complete `quoteExactInput` call with path encoding using `solidityPack` and tuple destructuring on the return
-- The difference between calling the view quoter directly versus using `.callStatic` on QuoterV2
-- A table of which chains support the view quoter interface
-
-That is the entire gap. The protocol itself is well designed. The documentation just needs to meet JavaScript developers at their level instead of assuming they will translate Solidity interfaces into correct ethers.js on their own.
-
----
-
-## Overall
-
-Uniswap V3 works. The architecture is the right call for a protocol at this scale. The fee tier system and the permissionless liquidity model are genuinely good. The documentation gap is real but narrow. Fix the JavaScript examples and the onboarding experience becomes significantly better.
-
-Rating: 6 out of 10. Would be an 8 with proper ethers.js examples in the docs.
-
----
+That's my honest feedback. I'd build on V3 again.
 
 UNCHAINED9 · ETHOnline 2026
