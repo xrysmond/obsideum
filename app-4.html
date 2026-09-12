@@ -2746,6 +2746,52 @@
       letter-spacing: .34em;
     }
 
+    /* ── Login options (State A — not connected) ── */
+    .wsh-login-options {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      width: 100%;
+      max-width: 300px;
+    }
+
+    .wsh-login-opt {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      padding: 14px 18px;
+      border-radius: 10px;
+      border: 1px solid var(--trace);
+      background: transparent;
+      font-family: var(--fm);
+      font-size: .58rem;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: var(--br);
+      cursor: pointer;
+      transition: border-color 140ms var(--ease-std), background 140ms var(--ease-std);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .wsh-login-opt:active {
+      border-color: var(--em);
+      background: rgba(156,61,187,.08);
+    }
+    .wsh-login-opt-icon {
+      font-size: .85rem;
+      width: 20px;
+      text-align: center;
+      flex-shrink: 0;
+      color: var(--em-2);
+    }
+
+    .wsh-email-input {
+      width: 100%;
+      max-width: 300px;
+      padding: 13px 16px;
+      font-size: .72rem;
+    }
+
     /* ── Disconnect button — full width, bottom of sheet ── */
     .wsh-disconnect-btn {
       display: block;

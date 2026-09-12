@@ -32,7 +32,7 @@
 ═══════════════════════════════════════ */
 
 var PRIVY_APP_ID    = 'cmtemvtdu01rn0cjipu1ic33f';
-var PRIVY_CLIENT_ID = 'client-WY6d5Cv8Sps7wfzQ41LVNn1e1ynnnTS3GSyz2Hc5cuQVG';   /* ← paste your Privy client ID here */
+var PRIVY_CLIENT_ID = 'client-WY6d5Cv8Sps7wfzQ41LVNn1e1ynnnTS3GSyz2Hc5cuQVG';
 
 var NETWORK_NAMES = {
   1:        'Ethereum',
@@ -241,8 +241,31 @@ function renderWalletSheet() {
 function _renderA(sI, sA, sT, sN, sV, sD) {
   sI.innerHTML =
     '<div class="wsh-connect-section">' +
-      '<span class="wsh-connect-eyebrow">Connect your wallet</span>' +
-      _btnPrimary('wsh-connect-btn', 'CONNECT WALLET') +
+      '<span class="wsh-connect-eyebrow">Sign in to OBSIDEUM</span>' +
+      '<div class="wsh-login-options">' +
+        '<button class="wsh-login-opt" id="wsh-opt-wallet">' +
+          '<span class="wsh-login-opt-icon">⬡</span>' +
+          '<span>Connect Wallet</span>' +
+        '</button>' +
+        '<button class="wsh-login-opt" id="wsh-opt-google">' +
+          '<span class="wsh-login-opt-icon">G</span>' +
+          '<span>Continue with Google</span>' +
+        '</button>' +
+        '<button class="wsh-login-opt" id="wsh-opt-email">' +
+          '<span class="wsh-login-opt-icon">@</span>' +
+          '<span>Continue with Email</span>' +
+        '</button>' +
+      '</div>' +
+      '<div id="wsh-email-form" hidden>' +
+        '<input class="glass-input wsh-email-input" id="wsh-email-input" type="email" ' +
+          'placeholder="Enter your email…" autocomplete="email" spellcheck="false">' +
+        '<button class="wsh-login-opt" id="wsh-email-submit">Send Code</button>' +
+        '<div id="wsh-otp-wrap" hidden>' +
+          '<input class="glass-input wsh-email-input" id="wsh-otp-input" type="text" ' +
+            'placeholder="Enter code…" autocomplete="one-time-code" maxlength="6">' +
+          '<button class="wsh-login-opt" id="wsh-otp-submit">Verify</button>' +
+        '</div>' +
+      '</div>' +
     '</div>';
 
   sA.hidden = true;
@@ -251,11 +274,85 @@ function _renderA(sI, sA, sT, sN, sV, sD) {
   sV.hidden = true;
   if (sD) sD.hidden = true;
 
-  var btn = document.getElementById('wsh-connect-btn');
-  if (btn) {
-    btn.addEventListener('click', function () {
+  /* Wallet — SIWE */
+  var walletBtn = document.getElementById('wsh-opt-wallet');
+  if (walletBtn) {
+    walletBtn.addEventListener('click', function () {
+      _connectWithWallet();
+    });
+  }
+
+  /* Google — full-page redirect OAuth */
+  var googleBtn = document.getElementById('wsh-opt-google');
+  if (googleBtn) {
+    googleBtn.addEventListener('click', function () {
       closeWalletSheet();
-      connect();
+      connectWithOAuth('google');
+    });
+  }
+
+  /* Email — show input */
+  var emailBtn  = document.getElementById('wsh-opt-email');
+  var emailForm = document.getElementById('wsh-email-form');
+  if (emailBtn && emailForm) {
+    emailBtn.addEventListener('click', function () {
+      emailBtn.hidden  = true;
+      emailForm.hidden = false;
+    });
+  }
+
+  /* Send OTP code */
+  var emailSubmit = document.getElementById('wsh-email-submit');
+  if (emailSubmit) {
+    emailSubmit.addEventListener('click', async function () {
+      var emailInput = document.getElementById('wsh-email-input');
+      var email = emailInput ? emailInput.value.trim() : '';
+      if (!email) return;
+
+      emailSubmit.textContent = 'Sending…';
+      emailSubmit.disabled = true;
+      try {
+        await _privyReady;
+        await _privy.auth.email.sendCode(email);
+        var otpWrap = document.getElementById('wsh-otp-wrap');
+        if (otpWrap) otpWrap.hidden = false;
+        emailSubmit.textContent = 'Resend';
+        emailSubmit.disabled = false;
+      } catch (err) {
+        emailSubmit.textContent = 'Send Code';
+        emailSubmit.disabled = false;
+        if (typeof showToast === 'function') showToast('Failed to send code: ' + (err.message || err), 'terr');
+      }
+    });
+  }
+
+  /* Verify OTP */
+  var otpSubmit = document.getElementById('wsh-otp-submit');
+  if (otpSubmit) {
+    otpSubmit.addEventListener('click', async function () {
+      var emailInput = document.getElementById('wsh-email-input');
+      var otpInput   = document.getElementById('wsh-otp-input');
+      var email = emailInput ? emailInput.value.trim() : '';
+      var code  = otpInput  ? otpInput.value.trim()   : '';
+      if (!email || !code) return;
+
+      otpSubmit.textContent = 'Verifying…';
+      otpSubmit.disabled = true;
+      try {
+        await _privyReady;
+        var session = await _privy.auth.email.loginWithCode(
+          email, code,
+          'login-or-sign-up',
+          { embedded: { ethereum: { createOnLogin: 'user-without-wallets' } } }
+        );
+        closeWalletSheet();
+        await _afterLogin(session);
+        if (typeof showToast === 'function') showToast('Login successful!', 'tok');
+      } catch (err) {
+        otpSubmit.textContent = 'Verify';
+        otpSubmit.disabled = false;
+        if (typeof showToast === 'function') showToast('Invalid code: ' + (err.message || err), 'terr');
+      }
     });
   }
 }
@@ -881,64 +978,97 @@ async function checkExistingConnection() {
   _loadPrivy();
 }
 
-/* connect — SIWE for injected wallet (external-wallet-login.js),
-   falls back to social/email hint if no wallet detected.           */
+/* connect — opens the login options sheet.
+   The actual SIWE flow lives in _connectWithWallet(), called only
+   when the user explicitly taps "Connect Wallet" inside the sheet. */
 async function connect() {
-  await _privyReady;
-
   if (STATE.connected) { openWalletSheet(); return; }
+  openWalletSheet();
+}
+
+/* _connectWithWallet — SIWE flow for injected wallet.
+   Called from the "Connect Wallet" button inside _renderA(). */
+async function _connectWithWallet() {
+  await _privyReady;
 
   if (!_privy) {
     if (typeof showToast === 'function') showToast('Wallet service not ready. Try again.', 'terr');
     return;
   }
 
-  if (window.ethereum) {
-    /* External wallet — SIWE (external-wallet-login.js loginWithExternalWallet) */
+  if (!window.ethereum) {
+    if (typeof showToast === 'function') showToast('No wallet detected in this browser.', 'terr');
+    return;
+  }
+
+  try {
+    /* 1. Request accounts */
+    var accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    if (!accounts || !accounts.length) return;
+
+    /* 2. Checksum address */
+    var rawAddress = accounts[0];
+    var address;
     try {
-      var accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-      if (!accounts || !accounts.length) return;
-      var address = accounts[0];
-      var chainId = await window.ethereum.request({ method: 'eth_chainId' });
+      address = (window.ethers) ? ethers.utils.getAddress(rawAddress) : rawAddress;
+    } catch (_) { address = rawAddress; }
 
-      var { message } = await _privy.auth.siwe.init(
-        {
-          address:          address,
-          chainId:          'eip155:' + parseInt(chainId, 16),
-          walletClientType: 'brave_wallet',
-          connectorType:    'injected',
-        },
-        window.location.host,
-        window.location.origin
-      );
+    /* 3. Chain ID */
+    var chainIdHex       = await window.ethereum.request({ method: 'eth_chainId' });
+    var chainIdNum       = parseInt(chainIdHex, 16);
+    var formattedChainId = 'eip155:' + chainIdNum;
 
-      var signature = await window.ethereum.request({
-        method: 'personal_sign',
-        params: [message, address],
-      });
+    /* 4. Get SIWE message */
+    var siweInit = await _privy.auth.siwe.init(
+      {
+        address:          address,
+        chainId:          formattedChainId,
+        walletClientType: 'metamask',
+        connectorType:    'injected',
+      },
+      window.location.host,
+      window.location.origin
+    );
+    var message = siweInit.message;
 
-      var session = await _privy.auth.siwe.loginWithSiwe(
-        signature, undefined, undefined,
-        'login-or-sign-up',
-        { ethereum: { createOnLogin: 'user-without-wallets' } }
-      );
+    /* 5. Hex-encode message — matches what viem's signMessage sends */
+    var msgBytes = new TextEncoder().encode(message);
+    var msgHex   = '0x' + Array.from(msgBytes)
+      .map(function (b) { return b.toString(16).padStart(2, '0'); })
+      .join('');
 
-      await _afterLogin(session);
-      if (typeof showToast === 'function') showToast('Wallet connected!', 'tok');
+    /* 6. Sign */
+    var signature = await window.ethereum.request({
+      method: 'personal_sign',
+      params: [msgHex, address],
+    });
 
-    } catch (err) {
-      var msg = (err && err.message) ? err.message.toLowerCase() : '';
-      if (!msg.includes('cancel') && !msg.includes('reject') && !msg.includes('denied')) {
-        console.error('[OBSIDEUM wallet] Connect error:', err);
-        if (typeof showToast === 'function') showToast('Connection failed. Try again.', 'terr');
-      }
+    /* 7. Complete login */
+    var session = await _privy.auth.siwe.loginWithSiwe(
+      signature, undefined, undefined,
+      'login-or-sign-up',
+      { ethereum: { createOnLogin: 'user-without-wallets' } }
+    );
+
+    closeWalletSheet();
+    await _afterLogin(session);
+    if (typeof showToast === 'function') showToast('Wallet connected!', 'tok');
+
+  } catch (err) {
+    var code   = err && err.code;
+    var errMsg = (err && err.message) ? err.message : 'Unknown error';
+    var errLow = errMsg.toLowerCase();
+
+    if (code === 4001 ||
+        errLow.includes('cancel') ||
+        errLow.includes('reject') ||
+        errLow.includes('denied') ||
+        errLow.includes('dismiss')) {
+      return;
     }
 
-  } else {
-    /* No injected wallet — prompt social/email login */
-    if (typeof showToast === 'function') {
-      showToast('No wallet detected. Use Google or email login below.', 'info');
-    }
+    console.error('[OBSIDEUM wallet] Wallet connect error:', err);
+    if (typeof showToast === 'function') showToast('Login failed: ' + errMsg, 'terr');
   }
 }
 
