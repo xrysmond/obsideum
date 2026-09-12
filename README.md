@@ -2,7 +2,7 @@
 
 Decentralized trading interface built on Uniswap V3 and Privy.
 
-Live: https://xrysmond.github.io/obsideum/
+Live: https://xrysmond.github.io/obsideum/app
 Built by Waeven Xrysmond · UNCHAINED9 · ETHOnline 2026
 
 ---
