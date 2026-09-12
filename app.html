@@ -2411,6 +2411,22 @@
       opacity: .65;
     }
 
+    /* Coming soon label — replaces ENS claim UI until Phase 6B ships */
+    .wsh-coming-soon {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 5px 10px;
+      font-family: var(--fm);
+      font-size: .56rem;
+      letter-spacing: .22em;
+      text-transform: uppercase;
+      color: var(--em-2);
+      border: 1px solid rgba(156,61,187,.24);
+      border-radius: 4px;
+      opacity: .55;
+      line-height: 1;
+    }
+
     /* Claim prompt */
     .wsh-claim-prompt {
       display: flex;
@@ -2771,16 +2787,43 @@
     .wsh-shake { animation: wsh-shake 380ms var(--ease-std); }
 
   /* ══════════════════════════════════════════════════════════════════
-     GATE SCREEN
-     Guards app entry until wallet is confirmed.
-     z-index 400: above canvases (1,2), app overlays, below loading (500) and cursor (999).
-     Background: exact match of html,body in core.css — seamless visual.
+     GATE SCREEN — two-layer system
+
+     #gate-bg   z-index 3    solid dark background, covers app content.
+     canvases   z-index 401/402 while body.gate-active — crystal shows
+                above #gate-bg but below gate content.
+     #gate      z-index 403  transparent, holds logo / wordmark / button.
+
+     On dissolve: both layers fade together, body.gate-active is removed,
+     canvases return to z-index 1/2 for normal app rendering.
   ══════════════════════════════════════════════════════════════════ */
 
+  /* Solid background — hides app content, matches body gradient exactly */
+  #gate-bg {
+    position: fixed;
+    inset: 0;
+    z-index: 3;
+    background: var(--void);
+    background-image:
+      radial-gradient(ellipse 75% 55% at 18% 85%, rgba(156,61,187,.18) 0%, transparent 58%),
+      radial-gradient(ellipse 65% 48% at 82% 14%, rgba(100,30,140,.14) 0%, transparent 52%),
+      radial-gradient(ellipse 90% 35% at 50% 50%, rgba(60,10,80,.10)   0%, transparent 62%);
+    pointer-events: none;
+    transition: opacity 700ms var(--ease-out);
+    will-change: opacity;
+  }
+  #gate-bg.gate-off  { opacity: 0; }
+  #gate-bg.gate-gone { display: none; }
+
+  /* Raise canvases above #gate-bg while gate is active so crystal is visible */
+  body.gate-active #crystal-canvas  { z-index: 401; }
+  body.gate-active #particle-canvas { z-index: 402; }
+
+  /* Content layer — transparent, sits above crystal/particle canvases */
   #gate {
     position: fixed;
     inset: 0;
-    z-index: 400;
+    z-index: 403;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -2791,13 +2834,11 @@
     cursor: none;
   }
 
-  /* Fade-out state — opacity 0 but still in layout until gate-gone removes it */
   #gate.gate-off {
     opacity: 0;
     pointer-events: none;
   }
 
-  /* Removed from layout — stops any residual interaction blocking */
   #gate.gate-gone {
     display: none;
   }
@@ -2880,6 +2921,10 @@
 <canvas id="particle-canvas"></canvas>
 
 <!-- ── Gate Screen — guards app entry until wallet is confirmed ──── -->
+<!-- Background layer: solid dark, covers app. Crystal canvases raised above it via body.gate-active. -->
+<div id="gate-bg"></div>
+
+<!-- Content layer: transparent, above canvases -->
 <div id="gate">
 
   <!-- Mark — geometry and animation exact from OBS-LOGO.html -->
@@ -3455,16 +3500,8 @@
     if (dot) dot.classList.toggle('connected', !!addr);
   });
 
-  document.addEventListener('state:ens', function (e) {
-    var ens = e.detail;
-    if (!ens || !STATE.wallet || !sidebarWallet) return;
-    sidebarWallet.style.opacity = '0';
-    setTimeout(function () {
-      sidebarWallet.textContent   = ens;
-      sidebarWallet.style.color   = 'var(--em-2)';
-      sidebarWallet.style.opacity = '1';
-    }, 100);
-  });
+  /* state:ens — ENS identity is coming soon; sidebar shows truncated address only */
+  document.addEventListener('state:ens', function () { /* Phase 6B — coming soon */ });
 
   document.addEventListener('state:network', function (e) {
     var id = e.detail;
@@ -5190,23 +5227,36 @@
   'use strict';
 
   var gate       = document.getElementById('gate');
+  var gateBg     = document.getElementById('gate-bg');
   var wordmark   = document.getElementById('gate-wordmark');
   var btnWrap    = document.getElementById('gate-btn-wrap');
   var connectBtn = document.getElementById('gate-connect-btn');
 
   var _dissolved = false;
 
-  /* Dissolve gate — 700ms fade, then remove from layout */
+  /* Mark gate as active — raises canvases above gate-bg via CSS override */
+  document.body.classList.add('gate-active');
+
+  /* Dissolve both layers simultaneously.
+   * After fade: remove gate-active so canvases drop back to z-index 1/2
+   * and the app canvas layer returns to normal operation. */
   function dissolve() {
     if (_dissolved) return;
     _dissolved = true;
     gate.classList.add('gate-off');
-    setTimeout(function () { gate.classList.add('gate-gone'); }, 720);
+    if (gateBg) gateBg.classList.add('gate-off');
+    setTimeout(function () {
+      gate.classList.add('gate-gone');
+      if (gateBg) gateBg.classList.add('gate-gone');
+      document.body.classList.remove('gate-active');
+    }, 720);
   }
 
   /* Instant-off path: session already live when page loads */
   if (window.STATE && STATE.connected) {
     gate.classList.add('gate-gone');
+    if (gateBg) gateBg.classList.add('gate-gone');
+    document.body.classList.remove('gate-active');
     _dissolved = true;
     return;
   }

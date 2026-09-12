@@ -309,13 +309,8 @@ function _renderIdentity(el, hasSubname) {
   el.innerHTML =
     '<span class="wsh-label">Identity</span>' +
     ident +
-    '<button class="wsh-claim-prompt" id="wsh-claim-btn" aria-expanded="false">' +
-      '<span class="wsh-claim-arrow" aria-hidden="true">\u203a</span>' +
-      '<span>Claim your obsideum.eth identity</span>' +
-    '</button>' +
-    '<div id="wsh-claim-form" hidden></div>';
-
-  _wireClaimPrompt();
+    '<div class="wsh-coming-soon">ENS Identity &mdash; Coming Soon</div>';
+  /* Phase 6B: claim prompt removed until ENS registration is live */
 }
 
 function _wireClaimPrompt() {
@@ -1232,13 +1227,14 @@ function _renderENSSection() {
   var container = document.getElementById('accounts-ens-content');
   if (!container) return;
 
+  /* Phase 6B coming soon — all states show the coming soon label */
   if (!STATE.connected || !STATE.wallet) {
     container.innerHTML =
-      '<span class="accounts-ens-hint">Connect a wallet to claim an ENS identity.</span>';
+      '<div class="wsh-coming-soon">ENS Identity &mdash; Coming Soon</div>';
     return;
   }
 
-  /* State C — ENSv2 subname registered */
+  /* State C — ENSv2 subname registered (kept for when Phase 6B ships) */
   if (STATE.ensSubname) {
     container.innerHTML =
       '<div class="wsh-subname">' + _esc(STATE.ensSubname) + '</div>' +
@@ -1246,20 +1242,14 @@ function _renderENSSection() {
     return;
   }
 
-  /* State B — has primary ENS, no subname yet */
+  /* States A + B — show address and coming soon label */
   var identLine = STATE.ens
     ? '<div class="wsh-id-addr">' + _esc(STATE.ens) + '</div>'
     : '<div class="wsh-id-addr">' + _esc(_t6x4(STATE.wallet)) + '</div>';
 
   container.innerHTML =
     identLine +
-    '<button class="wsh-claim-prompt" id="accts-claim-btn" aria-expanded="false">' +
-      '<span class="wsh-claim-arrow" aria-hidden="true">\u203a</span>' +
-      '<span>Claim your obsideum.eth identity</span>' +
-    '</button>' +
-    '<div id="accts-claim-form" hidden></div>';
-
-  _wireAccountsClaimPrompt();
+    '<div class="wsh-coming-soon">ENS Identity &mdash; Coming Soon</div>';
 }
 
 function _wireAccountsClaimPrompt() {
