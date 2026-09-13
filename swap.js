@@ -1721,7 +1721,7 @@
         closeTokenPicker();
 
         /* Refresh all mounted swap cards */
-        ['right-panel-content', 'mobile-swap'].forEach(function (id) {
+        ['desktop-swap-layout', 'mobile-swap'].forEach(function (id) {
           var outer = document.getElementById(id);
           var view  = outer && outer.querySelector('.swap-view');
           if (!view) return;
@@ -1830,10 +1830,9 @@
      STATE LISTENERS
   ═══════════════════════════════════════════════════════════ */
 
-  /* Desktop right panel */
-  document.addEventListener('panel:render', function (e) {
-    if (e.detail !== 'swap') return;
-    var el = document.getElementById('right-panel-content');
+  /* Desktop full-screen swap — fired by app.html setDesktopView('swap') */
+  document.addEventListener('desktop:swap', function () {
+    var el = document.getElementById('desktop-swap-layout');
     if (el) mountSwapCard(el);
   });
 
@@ -1844,7 +1843,7 @@
     if (el) mountSwapCard(el);
   });
 
-  /* Network change — reset provider cache and remount */
+  /* Network change — reset provider cache and remount wherever swap is live */
   document.addEventListener('state:network', function () {
     /* Invalidate wallet provider cache — chain changed, need fresh Web3Provider */
     _walletProvider      = null;
@@ -1852,7 +1851,8 @@
 
     S.fromAddress = 'NATIVE';
     S.toAddress   = null;
-    ['right-panel-content', 'mobile-swap'].forEach(function (id) {
+
+    ['desktop-swap-layout', 'mobile-swap'].forEach(function (id) {
       var el = document.getElementById(id);
       if (el && el.querySelector('.swap-view')) mountSwapCard(el);
     });
@@ -1860,7 +1860,7 @@
 
   /* Prices refreshed — re-quote to update price impact */
   document.addEventListener('state:prices', function () {
-    ['right-panel-content', 'mobile-swap'].forEach(function (id) {
+    ['desktop-swap-layout', 'mobile-swap'].forEach(function (id) {
       var el   = document.getElementById(id);
       var view = el && el.querySelector('.swap-view');
       if (!view) return;
@@ -1871,7 +1871,7 @@
 
   /* Portfolio balances updated — refresh balance lines */
   document.addEventListener('state:portfolioBalances', function () {
-    ['right-panel-content', 'mobile-swap'].forEach(function (id) {
+    ['desktop-swap-layout', 'mobile-swap'].forEach(function (id) {
       var el   = document.getElementById(id);
       var view = el && el.querySelector('.swap-view');
       if (view) view.dispatchEvent(new CustomEvent('swap:refreshBals'));
@@ -1880,7 +1880,7 @@
 
   /* Connection state changed — refresh exec button */
   document.addEventListener('state:connected', function () {
-    ['right-panel-content', 'mobile-swap'].forEach(function (id) {
+    ['desktop-swap-layout', 'mobile-swap'].forEach(function (id) {
       var el   = document.getElementById(id);
       var view = el && el.querySelector('.swap-view');
       if (!view) return;

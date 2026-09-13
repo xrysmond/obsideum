@@ -309,24 +309,39 @@
     var tokens = CHAIN_TOKEN_LIST[chainId];
     if (!tokens || !tokens.length) return Promise.resolve([]);
 
-    var coinsStr   = tokens.map(function (t) { return t.llamaKey; }).join(',');
-    var priceUrl   = 'https://coins.llama.fi/prices/current/'  + coinsStr + '?searchWidth=4h';
-    var pctUrl     = 'https://coins.llama.fi/percentage/'      + coinsStr + '?period=24h';
-    var hdrs       = { Accept: 'application/json' };
+    var coinsStr    = tokens.map(function (t) { return t.llamaKey; }).join(',');
+    var nowTs       = Math.floor(Date.now() / 1000);
+    var past24Ts    = nowTs - 86400;
+    var hdrs        = { Accept: 'application/json' };
+
+    /* Two parallel fetches using the SAME endpoint format:
+     * /prices/current/  — current prices, same chain support as historical
+     * /prices/historical/{ts}/  — prices exactly 24h ago, compute delta ourselves.
+     * This replaces the unreliable /percentage/ endpoint which drops chains
+     * inconsistently (bsc, polygon, avax all affected). */
+    var priceUrl = 'https://coins.llama.fi/prices/current/'
+      + coinsStr + '?searchWidth=4h';
+    var histUrl  = 'https://coins.llama.fi/prices/historical/'
+      + past24Ts + '/' + coinsStr + '?searchWidth=4h';
 
     var promise = Promise.all([
       fetch(priceUrl, { headers: hdrs }).then(function (r) { return r.ok ? r.json() : {}; }).catch(function () { return {}; }),
-      fetch(pctUrl,   { headers: hdrs }).then(function (r) { return r.ok ? r.json() : {}; }).catch(function () { return {}; }),
+      fetch(histUrl,  { headers: hdrs }).then(function (r) { return r.ok ? r.json() : {}; }).catch(function () { return {}; }),
     ])
     .then(function (results) {
       var priceCoins = (results[0] && results[0].coins) || {};
-      var pctCoins   = (results[1] && results[1].coins) || {};
+      var histCoins  = (results[1] && results[1].coins) || {};
 
       var merged = tokens.map(function (t) {
-        var coinInfo  = priceCoins[t.llamaKey] || {};
-        var pct       = pctCoins[t.llamaKey];
-        var price     = (typeof coinInfo.price  === 'number' && isFinite(coinInfo.price))  ? coinInfo.price  : null;
-        var change24h = (typeof pct             === 'number' && isFinite(pct))             ? pct             : null;
+        var current   = priceCoins[t.llamaKey];
+        var past      = histCoins[t.llamaKey];
+        var price     = (current && typeof current.price === 'number' && isFinite(current.price)) ? current.price : null;
+        var pastPrice = (past    && typeof past.price    === 'number' && isFinite(past.price)    && past.price > 0) ? past.price : null;
+
+        /* Compute 24h % change from price delta — no dependency on /percentage/ */
+        var change24h = (price !== null && pastPrice !== null)
+          ? ((price - pastPrice) / pastPrice) * 100
+          : null;
 
         return {
           sym:       t.sym,
@@ -347,7 +362,6 @@
     })
     .catch(function (err) {
       console.warn('[explore.js] fetchChain', chainId, err.message || err);
-      /* Keep stale data on error. If no stale data, return list with null prices. */
       if (_cache[chainId]) return _cache[chainId];
       return tokens.map(function (t) {
         return {

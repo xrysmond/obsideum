@@ -21,6 +21,8 @@
     .content-area {
       display: grid;
       grid-template-columns: 360px 1fr;
+      grid-template-rows: 100%;  /* single row fills the container — required for height:100% children */
+      height: 100%;              /* inherit 100svh from app-desktop grid */
       overflow: hidden;
     }
 
@@ -350,6 +352,7 @@
     /* ── Desktop Explore layout ── */
     .desktop-explore-layout {
       grid-column: 1 / -1;
+      height: 100%;   /* content-area grid-template-rows:100% makes this work */
       display: flex;
       flex-direction: column;
       overflow: hidden;
@@ -407,6 +410,21 @@
       text-transform: uppercase;
       color: var(--dim);
       text-align: right;
+    }
+
+    /* ── Desktop Swap layout — full content-area, card centered ── */
+    .desktop-swap-layout {
+      grid-column: 1 / -1;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow-y: auto;
+      padding: var(--sp-5);
+    }
+    #desktop-swap-layout .swap-view {
+      width: 100%;
+      max-width: 520px;
     }
 
     /* ── Mobile bottom nav ── */
@@ -3114,14 +3132,6 @@
         <span class="nav-label">Swap</span>
       </button>
 
-      <button class="nav-item" data-view="history">
-        <svg class="nav-icon" viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="9"/>
-          <path d="M12 7v5l3.5 3.5"/>
-        </svg>
-        <span class="nav-label">History</span>
-      </button>
-
       <button class="nav-item" data-view="accounts">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="8" r="4"/>
@@ -3162,6 +3172,7 @@
 
     <div id="settings-layout" class="settings-layout" hidden></div>
     <div id="desktop-explore-layout" class="desktop-explore-layout" hidden></div>
+    <div id="desktop-swap-layout" class="desktop-swap-layout" hidden></div>
     <div id="desktop-accounts" class="accounts-layout" hidden>
       <div class="accounts-inner"><!-- mountAccountsTab() renders here --></div>
     </div>
@@ -3549,49 +3560,70 @@
   ───────────────────────────────────────── */
   function setDesktopView(view) {
     var desktopExplore = document.getElementById('desktop-explore-layout');
+    var desktopSwap    = document.getElementById('desktop-swap-layout');
+
+    /* Helper — hide all full-screen overlays */
+    function hideFullscreen() {
+      settingsLayout.hidden              = true;
+      if (accountsLayout)  accountsLayout.hidden  = true;
+      if (desktopExplore)  desktopExplore.hidden  = true;
+      if (desktopSwap)     desktopSwap.hidden     = true;
+    }
 
     if (view === 'settings') {
       setState({ view: 'settings' });
       marketsLayout.style.display = 'none';
-      settingsLayout.hidden       = false;
-      if (accountsLayout)  accountsLayout.hidden  = true;
-      if (desktopExplore)  desktopExplore.hidden  = true;
+      hideFullscreen();
+      settingsLayout.hidden = false;
       animateDesktopLayout(settingsLayout);
       closeRightPanel();
+
     } else if (view === 'accounts') {
       setState({ view: 'accounts' });
       marketsLayout.style.display = 'none';
-      settingsLayout.hidden       = true;
-      if (desktopExplore)  desktopExplore.hidden  = true;
+      hideFullscreen();
       if (accountsLayout) {
         accountsLayout.hidden = false;
         animateDesktopLayout(accountsLayout);
-        /* mountAccountsTab targets the .accounts-inner wrapper so content
-         * stays within the 520px max-width constraint */
         var inner = accountsLayout.querySelector('.accounts-inner');
         if (typeof mountAccountsTab === 'function') mountAccountsTab(inner || accountsLayout);
       }
       closeRightPanel();
+
     } else if (view === 'explore') {
       setState({ view: 'explore' });
       marketsLayout.style.display = 'none';
-      settingsLayout.hidden       = true;
-      if (accountsLayout)  accountsLayout.hidden  = true;
+      hideFullscreen();
       if (desktopExplore) {
         desktopExplore.hidden = false;
         animateDesktopLayout(desktopExplore);
         document.dispatchEvent(new CustomEvent('desktop:explore'));
       }
       closeRightPanel();
-    } else {
+
+    } else if (view === 'swap') {
+      setState({ view: 'swap' });
+      marketsLayout.style.display = 'none';
+      hideFullscreen();
+      if (desktopSwap) {
+        desktopSwap.hidden = false;
+        animateDesktopLayout(desktopSwap);
+        document.dispatchEvent(new CustomEvent('desktop:swap'));
+      }
+      closeRightPanel();
+
+    } else if (view === 'portfolio') {
       setState({ view: 'markets' });
       marketsLayout.style.display = '';
-      settingsLayout.hidden       = true;
-      if (accountsLayout)  accountsLayout.hidden  = true;
-      if (desktopExplore)  desktopExplore.hidden  = true;
-      if      (view === 'portfolio') closeRightPanel();
-      else if (view === 'swap')      openRightPanel('swap');
-      else if (view === 'history')   openRightPanel('history');
+      hideFullscreen();
+      closeRightPanel();
+
+    } else {
+      /* Unknown view — fall back to portfolio */
+      setState({ view: 'markets' });
+      marketsLayout.style.display = '';
+      hideFullscreen();
+      closeRightPanel();
     }
   }
 
@@ -3602,7 +3634,9 @@
     var panel        = STATE.rightPanel;
     var inSettings   = settingsLayout && !settingsLayout.hidden;
     var desktopExp   = document.getElementById('desktop-explore-layout');
+    var desktopSwp   = document.getElementById('desktop-swap-layout');
     var inExplore    = desktopExp && !desktopExp.hidden;
+    var inSwap       = desktopSwp && !desktopSwp.hidden;
 
     document.querySelectorAll('.sidebar-nav .nav-item').forEach(function (btn) {
       var dv = btn.dataset.view;
@@ -3613,12 +3647,12 @@
         active = (dv === 'accounts');
       } else if (inExplore) {
         active = (dv === 'explore');
+      } else if (inSwap) {
+        active = (dv === 'swap');
       } else {
-        /* portfolio is active when panel is closed or showing a portfolio sub-context */
+        /* Portfolio is active when the right panel is closed or showing a token sub-context */
         active =
-          (dv === 'portfolio' && (panel === null || panel === 'token' || panel === 'send' || panel === 'receive')) ||
-          (dv === 'swap'      && panel === 'swap')    ||
-          (dv === 'history'   && panel === 'history');
+          (dv === 'portfolio' && (panel === null || panel === 'token' || panel === 'send' || panel === 'receive'));
       }
       btn.classList.toggle('active', active);
     });
@@ -3694,7 +3728,7 @@
 
     if (action === 'swap') {
       if (isMobile) setMobileTab('swap');
-      else          openRightPanel('swap');
+      else          setDesktopView('swap');
       /* swap.js reads STATE.token on mount — preselection handled there */
     }
     if (action === 'send') {
@@ -3771,11 +3805,13 @@
   ───────────────────────────────────────── */
   setAppHeight();
 
-  /* Desktop: markets layout visible, settings + explore + accounts hidden */
+  /* Desktop: markets layout visible, all full-screen overlays hidden */
   marketsLayout.style.display = '';
   settingsLayout.hidden = true;
   var _initExplore = document.getElementById('desktop-explore-layout');
   if (_initExplore) _initExplore.hidden = true;
+  var _initSwap = document.getElementById('desktop-swap-layout');
+  if (_initSwap) _initSwap.hidden = true;
   updateSidebarActive();
   requestAnimationFrame(updateSidebarIndicator);
 
