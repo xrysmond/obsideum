@@ -3575,6 +3575,7 @@
       marketsLayout.style.display = 'none';
       hideFullscreen();
       settingsLayout.hidden = false;
+      updateSidebarActive(); /* immediate — before animation */
       animateDesktopLayout(settingsLayout);
       closeRightPanel();
 
@@ -3584,6 +3585,7 @@
       hideFullscreen();
       if (accountsLayout) {
         accountsLayout.hidden = false;
+        updateSidebarActive(); /* immediate */
         animateDesktopLayout(accountsLayout);
         var inner = accountsLayout.querySelector('.accounts-inner');
         if (typeof mountAccountsTab === 'function') mountAccountsTab(inner || accountsLayout);
@@ -3596,6 +3598,7 @@
       hideFullscreen();
       if (desktopExplore) {
         desktopExplore.hidden = false;
+        updateSidebarActive(); /* immediate */
         animateDesktopLayout(desktopExplore);
         document.dispatchEvent(new CustomEvent('desktop:explore'));
       }
@@ -3607,6 +3610,7 @@
       hideFullscreen();
       if (desktopSwap) {
         desktopSwap.hidden = false;
+        updateSidebarActive(); /* immediate */
         animateDesktopLayout(desktopSwap);
         document.dispatchEvent(new CustomEvent('desktop:swap'));
       }
@@ -3616,6 +3620,7 @@
       setState({ view: 'markets' });
       marketsLayout.style.display = '';
       hideFullscreen();
+      updateSidebarActive(); /* immediate */
       closeRightPanel();
 
     } else {
@@ -3623,6 +3628,7 @@
       setState({ view: 'markets' });
       marketsLayout.style.display = '';
       hideFullscreen();
+      updateSidebarActive();
       closeRightPanel();
     }
   }
