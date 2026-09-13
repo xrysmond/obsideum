@@ -404,7 +404,7 @@
   function startAutoRefresh(chainId) {
     clearInterval(_refreshTimer);
     _refreshTimer = setInterval(function () {
-      if (!_mounted || !_container) { clearInterval(_refreshTimer); return; }
+      if (!(_mounted || _mountedDesktop) || !_container) { clearInterval(_refreshTimer); return; }
       /* Bust cache and refetch silently */
       delete _cache[chainId];
       delete _cacheTime[chainId];
@@ -580,7 +580,7 @@
      Falls back to full update if sort order depends on values.
   ════════════════════════════════════════════════════════ */
   function inPlaceUpdate() {
-    if (!_mounted || !_container) return;
+    if (!(_mounted || _mountedDesktop) || !_container) return;
     /* If sort relies on value order, full re-render is needed */
     if (_sortCol || _category === 'trending' || _category === 'gainers' || _category === 'losers') {
       update();
@@ -620,7 +620,7 @@
      UPDATE — full render from cache
   ════════════════════════════════════════════════════════ */
   function update() {
-    if (!_mounted || !_container) return;
+    if (!(_mounted || _mountedDesktop) || !_container) return;
 
     var listEl  = _container.querySelector('#explore-list');
     var countEl = _container.querySelector('#explore-count');
