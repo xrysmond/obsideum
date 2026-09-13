@@ -20,4 +20,4 @@ None of this is a protocol problem. The protocol does what it says. It's just th
 
 That's my honest feedback. I'd build on V3 again.
 
-UNCHAINED9 · ETHOnline 2026
+~ Waeven
