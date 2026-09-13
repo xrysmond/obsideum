@@ -574,7 +574,7 @@
         'text-transform:uppercase',
         'padding:5px 10px',
         'border-radius:5px',
-        'cursor:none',
+        'cursor:pointer',
         'outline:none',
         'flex-shrink:0',
         '-webkit-tap-highlight-color:transparent',
