@@ -1661,28 +1661,27 @@
 
     _renderPickerChains();
     _renderPickerList('');
+
+    /* CSS transitions handle everything — just add the class.
+     * No inline style manipulation: the JS double-RAF was fighting the CSS
+     * transition and causing the animation to snap to end state mid-flight. */
     overlay.classList.add('open');
 
-    var picker = overlay.querySelector('.token-picker');
-    if (picker) {
-      requestAnimationFrame(function () {
-        requestAnimationFrame(function () {
-          picker.style.transform = 'translateY(0) scale(1)';
-          picker.style.opacity   = '1';
-        });
-      });
-    }
-    setTimeout(function () { inp && inp.focus(); }, 160);
+    setTimeout(function () { inp && inp.focus(); }, 180);
   }
-
   function closeTokenPicker() {
     var overlay = document.getElementById('token-picker-overlay');
     if (!overlay) return;
+
+    /* Remove class — CSS transitions the overlay and picker back to hidden state.
+     * No inline style reset needed: we never set inline styles in openTokenPicker. */
     overlay.classList.remove('open');
-    var picker = overlay.querySelector('.token-picker');
-    if (picker) { picker.style.transform = ''; picker.style.opacity = ''; }
-    var inp = document.getElementById('token-picker-search');
-    if (inp) inp.value = '';
+
+    /* Clear search after the CSS transition finishes so there's no flash-of-empty */
+    setTimeout(function () {
+      var inp = document.getElementById('token-picker-search');
+      if (inp) inp.value = '';
+    }, 240);
   }
 
   function wireTokenPicker() {

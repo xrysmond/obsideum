@@ -245,8 +245,9 @@
   /* ════════════════════════════════════════════════════════
      MODULE STATE — local only, nothing written to STATE
   ════════════════════════════════════════════════════════ */
-  var _mounted        = false;
-  var _container      = null;
+  var _mounted        = false;  /* true once mobile-explore has been mounted */
+  var _mountedDesktop = false;  /* true once desktop-explore-layout has been mounted */
+  var _container      = null;   /* last-mounted container (mobile or desktop) */
   var _exploreChain   = null;
   var _category       = 'all';
   var _sortCol        = null;
@@ -519,6 +520,22 @@
   }
 
   /* ════════════════════════════════════════════════════════
+     DESKTOP ROW HTML
+     Extends mobile row with Volume + Market Cap columns.
+     Rendered when _container is #desktop-explore-layout.
+  ════════════════════════════════════════════════════════ */
+  function buildRowHtmlDesktop(entry) {
+    var base    = buildRowHtml(entry);
+    var volStr  = (entry.volume24h !== null && entry.volume24h !== undefined) ? fmtUSD(entry.volume24h) : '—';
+    var mcapStr = (entry.marketCap !== null  && entry.marketCap  !== undefined) ? fmtUSD(entry.marketCap)  : '—';
+    /* Inject extra columns before the closing </div> of the row */
+    return base.slice(0, base.lastIndexOf('</div>'))
+      + '<div class="explore-desk-vol">'  + volStr  + '</div>'
+      + '<div class="explore-desk-mcap">' + mcapStr + '</div>'
+      + '</div>';
+  }
+
+  /* ════════════════════════════════════════════════════════
      SKELETON
   ════════════════════════════════════════════════════════ */
   function renderSkeleton(listEl) {
@@ -607,7 +624,8 @@
       return;
     }
 
-    listEl.innerHTML = filtered.map(buildRowHtml).join('');
+    var isDesk = _container && _container.id === 'desktop-explore-layout';
+    listEl.innerHTML = filtered.map(isDesk ? buildRowHtmlDesktop : buildRowHtml).join('');
 
     /* Wire tap — synchronous, reads data-address + data-chain directly */
     listEl.querySelectorAll('.explore-row').forEach(function (row) {
@@ -706,7 +724,7 @@
   /* ════════════════════════════════════════════════════════
      FULL MOUNT
   ════════════════════════════════════════════════════════ */
-  function mountExplore(container) {
+  function mountExplore(container, isDesktop) {
     if (!container) return;
 
     injectExploreStyles();
@@ -769,7 +787,8 @@
     ].join('');
 
     _container = container;
-    _mounted   = true;
+    if (isDesktop) _mountedDesktop = true;
+    else           _mounted        = true;
 
     var searchEl = container.querySelector('#explore-search');
     var clearEl  = container.querySelector('#explore-search-clear');
@@ -843,14 +862,34 @@
      STATE LISTENERS
   ════════════════════════════════════════════════════════ */
 
+  /* ════════════════════════════════════════════════════════
+     STATE LISTENERS
+  ════════════════════════════════════════════════════════ */
+
+  /* Mobile tab activated */
   document.addEventListener('state:mobileTab', function (e) {
     if (e.detail !== 'explore') return;
     var container = document.getElementById('mobile-explore');
     if (!container) return;
 
     if (!_mounted) {
-      mountExplore(container);
+      mountExplore(container, false);
     } else {
+      /* Switch active container back to mobile if user was on desktop */
+      _container = container;
+      ensureAndRender(_exploreChain);
+    }
+  });
+
+  /* Desktop view activated — fired by app.html setDesktopView('explore') */
+  document.addEventListener('desktop:explore', function () {
+    var container = document.getElementById('desktop-explore-layout');
+    if (!container) return;
+
+    if (!_mountedDesktop) {
+      mountExplore(container, true);
+    } else {
+      _container = container;
       ensureAndRender(_exploreChain);
     }
   });

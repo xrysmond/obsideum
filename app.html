@@ -245,15 +245,19 @@
       transition: opacity 160ms var(--ease-std);
     }
 
-    .panel-content.leaving  { opacity: 0; }
+    .panel-content.leaving  {
+      opacity: 0;
+      transform: translateY(6px);
+      transition: opacity 160ms var(--ease-std), transform 160ms var(--ease-std);
+    }
 
     .panel-content.entering {
-      animation: panelIn 240ms var(--ease-std) forwards;
+      animation: panelIn 280ms var(--ease-spr) forwards;
     }
 
     @keyframes panelIn {
-      from { opacity: 0; }
-      to   { opacity: 1; }
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: none; }
     }
 
     .panel-null-state {
@@ -312,6 +316,97 @@
       position: absolute;
       inset: 0;
       overflow-y: auto;
+    }
+
+    /* ── Cinematic tab + sub-view transitions ───────────────────── */
+    @keyframes tabEnterRight {
+      from { opacity: 0; transform: translateX(28px); }
+      to   { opacity: 1; transform: none; }
+    }
+    @keyframes tabEnterLeft {
+      from { opacity: 0; transform: translateX(-28px); }
+      to   { opacity: 1; transform: none; }
+    }
+    @keyframes subviewEnter {
+      from { opacity: 0; transform: translateX(100%); }
+      to   { opacity: 1; transform: none; }
+    }
+    @keyframes subviewReturn {
+      from { opacity: 0; transform: translateX(-24px); }
+      to   { opacity: 1; transform: none; }
+    }
+    .mobile-view.anim-tab-right { animation: tabEnterRight 360ms var(--ease-spr) both; }
+    .mobile-view.anim-tab-left  { animation: tabEnterLeft  360ms var(--ease-spr) both; }
+    .mobile-view.anim-subview   { animation: subviewEnter  380ms var(--ease-spr) both; }
+    .mobile-view.anim-return    { animation: subviewReturn  320ms var(--ease-std) both; }
+
+    /* ── Desktop view transitions ── */
+    @keyframes desktopViewIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: none; }
+    }
+    .desktop-view-enter { animation: desktopViewIn 220ms var(--ease-std) both; }
+
+    /* ── Desktop Explore layout ── */
+    .desktop-explore-layout {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #desktop-explore-layout .explore-view {
+      height: 100%;
+      padding-top: var(--sp-3);
+    }
+    #desktop-explore-layout .explore-list {
+      padding-bottom: var(--sp-5);
+    }
+    /* Grid-based rows on desktop — extra Volume + Market Cap columns */
+    #desktop-explore-layout .asset-row.explore-row {
+      display: grid;
+      grid-template-columns: 52px 1fr 140px 90px 140px 160px;
+      align-items: center;
+      padding: 11px var(--sp-4);
+      gap: 0;
+    }
+    #desktop-explore-layout .asset-row-logo-wrap {
+      grid-column: 1;
+      width: 36px;
+      height: 36px;
+    }
+    #desktop-explore-layout .asset-row-identity {
+      grid-column: 2;
+      padding-left: var(--sp-3);
+    }
+    #desktop-explore-layout .asset-row-price {
+      grid-column: 3;
+    }
+    .explore-desk-vol,
+    .explore-desk-mcap {
+      font-family: var(--fm);
+      font-size: .68rem;
+      letter-spacing: .02em;
+      color: var(--dim);
+      text-align: right;
+      padding-right: 2px;
+    }
+    .explore-desk-vol  { grid-column: 4; }
+    .explore-desk-mcap { grid-column: 5; }
+    /* Desktop col header to match */
+    #desktop-explore-layout .explore-col-header {
+      display: grid;
+      grid-template-columns: 52px 1fr 140px 90px 140px 160px;
+      gap: 0;
+      padding: 7px var(--sp-4) 5px;
+    }
+    .explore-col-vol,
+    .explore-col-mcap {
+      font-family: var(--fm);
+      font-size: .46rem;
+      letter-spacing: .36em;
+      text-transform: uppercase;
+      color: var(--dim);
+      text-align: right;
     }
 
     /* ── Mobile bottom nav ── */
@@ -2116,14 +2211,14 @@
     .token-picker-overlay {
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,.68);
+      background: rgba(0,0,0,.72);
       z-index: 200;
       display: flex;
       align-items: center;
       justify-content: center;
       opacity: 0;
       pointer-events: none;
-      transition: opacity 180ms var(--ease-std);
+      transition: opacity 200ms var(--ease-std);
     }
     .token-picker-overlay.open {
       opacity: 1;
@@ -2138,11 +2233,11 @@
       flex-direction: column;
       border-radius: 14px;
       overflow: hidden;
-      transform: translateY(14px) scale(.97);
+      transform: translateY(22px) scale(.95);
       opacity: 0;
       transition:
-        transform 220ms var(--ease-spr),
-        opacity   180ms var(--ease-std);
+        transform 320ms var(--ease-spr),
+        opacity   200ms var(--ease-std);
     }
     .token-picker-overlay.open .token-picker {
       transform: translateY(0) scale(1);
@@ -3003,6 +3098,14 @@
         <span class="nav-label">Portfolio</span>
       </button>
 
+      <button class="nav-item" data-view="explore">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="9"/>
+          <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>
+        </svg>
+        <span class="nav-label">Explore</span>
+      </button>
+
       <button class="nav-item" data-view="swap">
         <svg class="nav-icon" viewBox="0 0 24 24">
           <path d="M7 20V4m0 0L3 8m4-4l4 4"/>
@@ -3058,6 +3161,7 @@
     </div>
 
     <div id="settings-layout" class="settings-layout" hidden></div>
+    <div id="desktop-explore-layout" class="desktop-explore-layout" hidden></div>
     <div id="desktop-accounts" class="accounts-layout" hidden>
       <div class="accounts-inner"><!-- mountAccountsTab() renders here --></div>
     </div>
@@ -3250,7 +3354,25 @@
   /* ─────────────────────────────────────────
      CONSTANTS
   ───────────────────────────────────────── */
-  var TAB_KEYS = ['portfolio', 'explore', 'swap', 'accounts'];
+  var TAB_KEYS    = ['portfolio', 'explore', 'swap', 'accounts'];
+  var _prevTabIdx = 0; /* tracks last tab index for transition direction */
+
+  /* ── Cinematic transition helpers ───────────────────────────────── */
+  function animateMobileEl(el, cls) {
+    if (!el) return;
+    el.classList.remove('anim-tab-right', 'anim-tab-left', 'anim-subview', 'anim-return');
+    void el.offsetWidth; /* force reflow so re-adding the class restarts the animation */
+    el.classList.add(cls);
+    setTimeout(function () { el.classList.remove(cls); }, 440);
+  }
+
+  function animateDesktopLayout(el) {
+    if (!el) return;
+    el.classList.remove('desktop-view-enter');
+    void el.offsetWidth;
+    el.classList.add('desktop-view-enter');
+    setTimeout(function () { el.classList.remove('desktop-view-enter'); }, 260);
+  }
 
   var NETWORK_NAMES = {
     1:        'Ethereum',
@@ -3292,10 +3414,14 @@
      Tab indicator tracks active tab.
   ───────────────────────────────────────── */
   function setMobileTab(tab) {
+    var newIdx  = TAB_KEYS.indexOf(tab);
+    var animCls = (newIdx >= _prevTabIdx) ? 'anim-tab-right' : 'anim-tab-left';
+    _prevTabIdx = (newIdx >= 0) ? newIdx : _prevTabIdx;
+
     hideAllMobileViews();
 
     var el = document.getElementById('mobile-' + tab);
-    if (el) el.hidden = false;
+    if (el) { el.hidden = false; animateMobileEl(el, animCls); }
 
     currentSubView = null;
     prevSubView    = null;
@@ -3317,11 +3443,11 @@
   ───────────────────────────────────────── */
   function setMobileSubView(view) {
     if (view === null) {
-      /* Return to active tab */
+      /* Return to active tab — slide back from left */
       hideAllMobileViews();
       var activeTab = STATE.mobileTab || 'portfolio';
       var tabEl = document.getElementById('mobile-' + activeTab);
-      if (tabEl) tabEl.hidden = false;
+      if (tabEl) { tabEl.hidden = false; animateMobileEl(tabEl, 'anim-return'); }
 
       prevSubView    = currentSubView;
       currentSubView = null;
@@ -3335,10 +3461,10 @@
       return;
     }
 
-    /* Show sub-view */
+    /* Show sub-view — slide in from right */
     hideAllMobileViews();
     var subEl = document.getElementById('mobile-' + view);
-    if (subEl) subEl.hidden = false;
+    if (subEl) { subEl.hidden = false; animateMobileEl(subEl, 'anim-subview'); }
 
     prevSubView    = currentSubView;
     currentSubView = view;
@@ -3367,9 +3493,18 @@
     if (!mobileWordmark) return;
     mobileWordmark.classList.remove('ctx-token', 'ctx-section');
     if (view === 'token') {
-      var tList = window.STATE && STATE.tokenList;
-      var match = tList && tList.find(function (t) { return t.address === STATE.token; });
-      mobileWordmark.textContent = match ? match.symbol : 'OBSIDEUM';
+      var addr = window.STATE && STATE.token;
+      var sym  = '';
+      if (addr === 'NATIVE') {
+        var chainId    = (window.STATE && STATE.tokenChainId) || (window.STATE && STATE.network) || 1;
+        var nativeDefs = window.APP_NATIVE_TOKENS;
+        sym = (nativeDefs && nativeDefs[chainId] && nativeDefs[chainId].symbol) || 'ETH';
+      } else {
+        var tList = window.STATE && STATE.tokenList;
+        var match = tList && tList.find(function (t) { return t.address === addr; });
+        sym = match ? match.symbol : '';
+      }
+      mobileWordmark.textContent = sym || 'OBSIDEUM';
       mobileWordmark.classList.add('ctx-token');
     } else if (view === 'settings') {
       mobileWordmark.textContent = 'SETTINGS';
@@ -3413,29 +3548,47 @@
      setDesktopView maps sidebar data-view to the correct action.
   ───────────────────────────────────────── */
   function setDesktopView(view) {
+    var desktopExplore = document.getElementById('desktop-explore-layout');
+
     if (view === 'settings') {
       setState({ view: 'settings' });
       marketsLayout.style.display = 'none';
       settingsLayout.hidden       = false;
-      if (accountsLayout) accountsLayout.hidden = true;
+      if (accountsLayout)  accountsLayout.hidden  = true;
+      if (desktopExplore)  desktopExplore.hidden  = true;
+      animateDesktopLayout(settingsLayout);
       closeRightPanel();
     } else if (view === 'accounts') {
       setState({ view: 'accounts' });
       marketsLayout.style.display = 'none';
       settingsLayout.hidden       = true;
+      if (desktopExplore)  desktopExplore.hidden  = true;
       if (accountsLayout) {
         accountsLayout.hidden = false;
+        animateDesktopLayout(accountsLayout);
         /* mountAccountsTab targets the .accounts-inner wrapper so content
          * stays within the 520px max-width constraint */
         var inner = accountsLayout.querySelector('.accounts-inner');
         if (typeof mountAccountsTab === 'function') mountAccountsTab(inner || accountsLayout);
       }
       closeRightPanel();
+    } else if (view === 'explore') {
+      setState({ view: 'explore' });
+      marketsLayout.style.display = 'none';
+      settingsLayout.hidden       = true;
+      if (accountsLayout)  accountsLayout.hidden  = true;
+      if (desktopExplore) {
+        desktopExplore.hidden = false;
+        animateDesktopLayout(desktopExplore);
+        document.dispatchEvent(new CustomEvent('desktop:explore'));
+      }
+      closeRightPanel();
     } else {
       setState({ view: 'markets' });
       marketsLayout.style.display = '';
       settingsLayout.hidden       = true;
-      if (accountsLayout) accountsLayout.hidden = true;
+      if (accountsLayout)  accountsLayout.hidden  = true;
+      if (desktopExplore)  desktopExplore.hidden  = true;
       if      (view === 'portfolio') closeRightPanel();
       else if (view === 'swap')      openRightPanel('swap');
       else if (view === 'history')   openRightPanel('history');
@@ -3446,8 +3599,10 @@
      DESKTOP — Sidebar active state + indicator
   ───────────────────────────────────────── */
   function updateSidebarActive() {
-    var panel      = STATE.rightPanel;
-    var inSettings = settingsLayout && !settingsLayout.hidden;
+    var panel        = STATE.rightPanel;
+    var inSettings   = settingsLayout && !settingsLayout.hidden;
+    var desktopExp   = document.getElementById('desktop-explore-layout');
+    var inExplore    = desktopExp && !desktopExp.hidden;
 
     document.querySelectorAll('.sidebar-nav .nav-item').forEach(function (btn) {
       var dv = btn.dataset.view;
@@ -3456,6 +3611,8 @@
         active = (dv === 'settings');
       } else if (accountsLayout && !accountsLayout.hidden) {
         active = (dv === 'accounts');
+      } else if (inExplore) {
+        active = (dv === 'explore');
       } else {
         /* portfolio is active when panel is closed or showing a portfolio sub-context */
         active =
@@ -3614,9 +3771,11 @@
   ───────────────────────────────────────── */
   setAppHeight();
 
-  /* Desktop: markets layout visible, settings hidden, right panel already hidden (Phase 8B) */
+  /* Desktop: markets layout visible, settings + explore + accounts hidden */
   marketsLayout.style.display = '';
   settingsLayout.hidden = true;
+  var _initExplore = document.getElementById('desktop-explore-layout');
+  if (_initExplore) _initExplore.hidden = true;
   updateSidebarActive();
   requestAnimationFrame(updateSidebarIndicator);
 
@@ -3626,347 +3785,10 @@
 }());
 </script>
 
-<!-- ── Phase 3A/3B — Token Row Component ────────────────────────── -->
-<script>
-(function () {
-  'use strict';
-
-  var MOCK_TOKEN_LIST = [
-    { address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', symbol: 'WETH', name: 'Wrapped Ether',   decimals: 18 },
-    { address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', symbol: 'WBTC', name: 'Wrapped Bitcoin',  decimals: 8  },
-    { address: '0x514910771AF9Ca656af840dff83E8264EcF986CA', symbol: 'LINK', name: 'Chainlink',        decimals: 18 },
-    { address: '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984', symbol: 'UNI',  name: 'Uniswap',         decimals: 18 },
-    { address: '0x6B175474E89094C44Da98b954EedeAC495271d0F', symbol: 'DAI',  name: 'Dai Stablecoin',  decimals: 18 },
-    { address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', symbol: 'USDC', name: 'USD Coin',        decimals: 6  },
-  ];
-
-  var MOCK_PRICES = {
-    '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2': { usd: 3247.82,  change24h:  2.61, updatedAt: 0 },
-    '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599': { usd: 67420.00, change24h:  1.14, updatedAt: 0 },
-    '0x514910771AF9Ca656af840dff83E8264EcF986CA': { usd: 14.23,    change24h: -0.52, updatedAt: 0 },
-    '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984': { usd: 8.20,     change24h:  3.08, updatedAt: 0 },
-    '0x6B175474E89094C44Da98b954EedeAC495271d0F': { usd: 1.00,     change24h:  0.01, updatedAt: 0 },
-    '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48': { usd: 1.00,     change24h: -0.01, updatedAt: 0 },
-  };
-
-  var MOCK_VOLUMES = {
-    '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2': 18400000000,
-    '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599':  2300000000,
-    '0x514910771AF9Ca656af840dff83E8264EcF986CA':   450000000,
-    '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984':   180000000,
-    '0x6B175474E89094C44Da98b954EedeAC495271d0F':   890000000,
-    '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48':  5200000000,
-  };
-
-  var desktopList   = document.getElementById('token-list');
-  var mobileList    = document.getElementById('mobile-token-list');
-  var desktopSearch = document.getElementById('token-search');
-  var mobileSearch  = document.getElementById('mobile-token-search');
-  var currentQuery  = '';
-
-  function getLogoUrl(address) {
-    var cs = address;
-    try { cs = ethers.utils.getAddress(address); } catch (_) {}
-    return 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/'
-      + cs + '/logo.png';
-  }
-
-  function formatPrice(usd) {
-    if (usd >= 10000) return '$' + usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    if (usd >= 1)     return '$' + usd.toFixed(2);
-    return '$' + usd.toFixed(4);
-  }
-
-  function formatChange(change) {
-    return (change >= 0 ? '+' : '') + change.toFixed(2) + '%';
-  }
-
-  function formatVolume(vol) {
-    if (!vol)       return '';
-    if (vol >= 1e9) return '$' + (vol / 1e9).toFixed(1) + 'B';
-    if (vol >= 1e6) return '$' + (vol / 1e6).toFixed(1) + 'M';
-    if (vol >= 1e3) return '$' + (vol / 1e3).toFixed(1) + 'K';
-    return '$' + Math.round(vol);
-  }
-
-  function buildSparklineSVG(isUp) {
-    var up = '2,20 6,17 11,18 17,13 23,15 29,10 35,12 41,7 47,9 54,5';
-    var dn = '2,5  6,8  11,6  17,11 23,9  29,14 35,12 41,17 47,14 54,20';
-    return '<svg width="56" height="24" viewBox="0 0 56 24" fill="none" aria-hidden="true">'
-      + '<polyline points="' + (isUp ? up : dn) + '"'
-      + ' stroke="currentColor" stroke-width="1.5"'
-      + ' stroke-linecap="round" stroke-linejoin="round"/>'
-      + '</svg>';
-  }
-
-  function buildSkeletonRow() {
-    var row = document.createElement('div');
-    row.className = 'token-row token-row--skeleton';
-    row.innerHTML =
-      '<div class="token-row-logo">'
-      +   '<div class="skeleton" style="width:28px;height:28px;border-radius:50%"></div>'
-      + '</div>'
-      + '<div class="token-row-info">'
-      +   '<div class="skeleton" style="width:90px;height:11px;margin-bottom:6px"></div>'
-      +   '<div class="skeleton" style="width:40px;height:9px"></div>'
-      + '</div>'
-      + '<div class="token-row-price">'
-      +   '<div class="skeleton" style="width:72px;height:11px;margin-bottom:6px"></div>'
-      +   '<div class="skeleton" style="width:48px;height:9px"></div>'
-      + '</div>';
-    return row;
-  }
-
-  function buildTokenRow(token, price) {
-    var row = document.createElement('div');
-    row.className = 'token-row';
-    row.setAttribute('data-address', token.address);
-    row.setAttribute('role', 'button');
-    row.setAttribute('tabindex', '0');
-
-    var change      = price ? price.change24h : 0;
-    var changeClass = change > 0 ? 'up' : change < 0 ? 'dn' : '';
-    var changeText  = price ? formatChange(change) : '\u2014';
-    var priceText   = price ? formatPrice(price.usd) : '\u2014';
-    var volumeText  = ''; /* Phase 7C wires real volume — blank until then */
-    var isUp        = change >= 0;
-
-    row.innerHTML =
-      '<div class="token-row-logo">'
-      +   '<img class="token-logo" src="' + getLogoUrl(token.address) + '"'
-      +   ' alt="' + token.symbol + '" width="28" height="28">'
-      +   '<div class="token-logo-fallback" style="display:none">' + token.symbol[0] + '</div>'
-      + '</div>'
-      + '<div class="token-row-info">'
-      +   '<span class="token-row-name">'   + token.name   + '</span>'
-      +   '<span class="token-row-symbol">' + token.symbol + '</span>'
-      +   '<span class="token-row-chain">Ethereum</span>'
-      + '</div>'
-      + '<div class="token-row-sparkline ' + (isUp ? 'sparkline-up' : 'sparkline-dn') + '">'
-      +   buildSparklineSVG(isUp)
-      + '</div>'
-      + '<div class="token-row-price">'
-      +   '<span class="token-row-usd" data-address="' + token.address + '">' + priceText + '</span>'
-      +   '<span class="token-row-change ' + changeClass + '">' + changeText + '</span>'
-      +   (volumeText ? '<span class="token-row-volume">' + volumeText + '</span>' : '')
-      + '</div>';
-
-    var img      = row.querySelector('.token-logo');
-    var fallback = row.querySelector('.token-logo-fallback');
-    img.onerror  = function () {
-      img.style.display      = 'none';
-      fallback.style.display = 'flex';
-    };
-
-    row.addEventListener('click',   function () { navigateToToken(token.address); });
-    row.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        navigateToToken(token.address);
-      }
-    });
-
-    return row;
-  }
-
-  function buildEmptyState(query) {
-    var div = document.createElement('div');
-    div.className = 'token-list-empty';
-    div.innerHTML = '<span class="token-list-empty-label">'
-      + (query ? 'No results for \u201c' + query + '\u201d' : 'No tokens available')
-      + '</span>';
-    return div;
-  }
-
-  function buildErrorState() {
-    var div = document.createElement('div');
-    div.className = 'token-list-error';
-    div.innerHTML =
-      '<span class="token-list-error-label">Price feed unavailable</span>'
-      + '<button class="token-list-retry">Retry</button>';
-    div.querySelector('.token-list-retry').addEventListener('click', boot);
-    return div;
-  }
-
-  function navigateToToken(address) {
-    if (!window.STATE || !window.setState) return;
-    if (window.innerWidth >= 768) {
-      setState({ rightPanel: 'token', token: address });
-    } else {
-      setState({ prevMobileView: STATE.mobileView, mobileView: 'token', token: address });
-    }
-  }
-
-  function renderToContainer(container, tokens, prices, animate) {
-    if (!container) return;
-    container.innerHTML = '';
-    if (!tokens || !tokens.length) {
-      container.appendChild(buildEmptyState(currentQuery));
-      return;
-    }
-    tokens.forEach(function (token, i) {
-      var row = buildTokenRow(token, prices ? prices[token.address] : null);
-      if (animate) {
-        row.style.opacity   = '0';
-        row.style.transform = 'translateY(4px)';
-      }
-      container.appendChild(row);
-      if (animate) {
-        setTimeout(function (r) {
-          r.style.transition = 'opacity 220ms var(--ease-out), transform 220ms var(--ease-spr)';
-          r.style.opacity    = '1';
-          r.style.transform  = 'translateY(0)';
-        }.bind(null, row), i * 40);
-      }
-    });
-  }
-
-  function renderBoth(tokens, prices, animate) {
-    renderToContainer(desktopList, tokens, prices, animate);
-    renderToContainer(mobileList,  tokens, prices, animate);
-  }
-
-  function showSkeletons() {
-    [desktopList, mobileList].forEach(function (c) {
-      if (!c) return;
-      c.innerHTML = '';
-      for (var s = 0; s < 3; s++) { c.appendChild(buildSkeletonRow()); }
-    });
-  }
-
-  function fadeSkeletonsThenRender(tokens, prices) {
-    var skeletons = (desktopList ? Array.from(desktopList.querySelectorAll('.token-row--skeleton')) : [])
-      .concat(mobileList ? Array.from(mobileList.querySelectorAll('.token-row--skeleton')) : []);
-    if (!skeletons.length) { renderBoth(tokens, prices, true); return; }
-    skeletons.forEach(function (s) {
-      s.style.transition = 'opacity 160ms var(--ease-in)';
-      s.style.opacity    = '0';
-    });
-    setTimeout(function () { renderBoth(tokens, prices, true); }, 160);
-  }
-
-  function applyFilter(query) {
-    currentQuery = query;
-    var all    = (STATE && STATE.tokenList) ? STATE.tokenList : [];
-    var prices = (STATE && STATE.prices)    ? STATE.prices    : {};
-    var lower  = query.toLowerCase().trim();
-    var filtered = lower ? all.filter(function (t) {
-      return t.name.toLowerCase().indexOf(lower)    > -1
-          || t.symbol.toLowerCase().indexOf(lower)  > -1
-          || t.address.toLowerCase().indexOf(lower) > -1;
-    }) : all;
-    renderBoth(filtered, prices, false);
-  }
-
-  function wireSearch(input, peer) {
-    if (!input) return;
-    input.addEventListener('input', function () {
-      if (peer) peer.value = input.value;
-      applyFilter(input.value);
-    });
-    input.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') {
-        input.value = '';
-        if (peer) peer.value = '';
-        applyFilter('');
-      }
-    });
-  }
-
-  document.addEventListener('state:tokenList', function () {
-    var tokens = (STATE && STATE.tokenList) ? STATE.tokenList : [];
-    var prices = (STATE && STATE.prices)    ? STATE.prices    : {};
-    if (!tokens.length) return;
-    currentQuery = '';
-    if (desktopSearch) desktopSearch.value = '';
-    if (mobileSearch)  mobileSearch.value  = '';
-    fadeSkeletonsThenRender(tokens, prices);
-  });
-
-  document.addEventListener('state:prices', function () {
-    var tokens = (STATE && STATE.tokenList) ? STATE.tokenList : [];
-    var prices = (STATE && STATE.prices)    ? STATE.prices    : {};
-    if (!tokens.length) return;
-    if (currentQuery) { applyFilter(currentQuery); }
-    else              { renderBoth(tokens, prices, false); }
-  });
-
-  function boot() {
-    showSkeletons();
-    setTimeout(function () {
-      setState({ tokenList: MOCK_TOKEN_LIST });
-      /* Prices come from Chainlink via prices.js — no mock seed */
-    }, 800);
-  }
-
-  wireSearch(desktopSearch, mobileSearch);
-  wireSearch(mobileSearch,  desktopSearch);
-  boot();
-
-}());
-</script>
-
 <!-- ── Phase 4B — Price Chart ───────────────────────────────────── -->
 <script>
 (function () {
   'use strict';
-
-  var MOCK_PRICE_HISTORY = (function () {
-    var now = Date.now();
-
-    function pr(n) {
-      var x = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
-      return x - Math.floor(x);
-    }
-    function randn(seed) {
-      var u1 = Math.max(1e-10, pr(seed));
-      var u2 = pr(seed + 0.5);
-      return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-    }
-
-    function walk(base, count, stepMs, stepVol, seed) {
-      var pts   = [];
-      var kappa = 0.08;
-      var p = base * (1 + randn(seed) * stepVol);
-      for (var i = count; i >= 0; i--) {
-        p = Math.max(base * 0.001, p);
-        pts.push([now - i * stepMs, +(p.toFixed(p >= 1 ? 2 : 6))]);
-        var drift = kappa * (base - p) / base;
-        var noise = randn(seed + i * 3 + 7) * stepVol;
-        p = p * (1 + drift + noise);
-      }
-      pts[pts.length - 1][1] = base;
-      return { prices: pts };
-    }
-
-    var T = {
-      '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2': { b: 3247.82,  s: 10,  dv: 0.044  },
-      '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599': { b: 67420.00, s: 20,  dv: 0.035  },
-      '0x514910771AF9Ca656af840dff83E8264EcF986CA': { b: 14.23,    s: 30,  dv: 0.057  },
-      '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984': { b: 8.20,     s: 40,  dv: 0.060  },
-      '0x6B175474E89094C44Da98b954EedeAC495271d0F': { b: 1.00,     s: 50,  dv: 0.0006 },
-      '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48': { b: 1.00,     s: 60,  dv: 0.0003 },
-    };
-
-    var h = {};
-    for (var addr in T) {
-      var t = T[addr];
-      h[addr] = {
-        '24H': walk(t.b, 24, 3600000,  t.dv / Math.sqrt(24), t.s),
-        '7D':  walk(t.b, 28, 21600000, t.dv / 2,             t.s + 100),
-        '30D': walk(t.b, 30, 86400000, t.dv,                 t.s + 200),
-      };
-    }
-    return h;
-  }());
-
-  (function () {
-    var h = (window.STATE && STATE.priceHistory) || {};
-    for (var addr in MOCK_PRICE_HISTORY) {
-      if (!h[addr]) h[addr] = MOCK_PRICE_HISTORY[addr];
-    }
-    setState({ priceHistory: h });
-  }());
 
   function fmtP(usd) {
     if (usd === null || usd === undefined) return '\u2014';
@@ -4420,7 +4242,7 @@
     }, 80);
   };
 
-  /* ── Per-chain native token definitions — mirrors CHAIN_NATIVE_TOKENS in portfolio.js.
+  /* Per-chain native token definitions — mirrors CHAIN_NATIVE_TOKENS in portfolio.js.
    * getToken() uses this to return the correct native token for any chain,
    * not just the wallet's currently active chain. ──────────────────────────────────── */
   var APP_NATIVE_TOKENS = {
@@ -4433,6 +4255,8 @@
     42161:  { address: 'NATIVE', symbol: 'ETH',  name: 'Ethereum',  decimals: 18 },
     43114:  { address: 'NATIVE', symbol: 'AVAX', name: 'Avalanche', decimals: 18 },
   };
+  /* Expose for nav script updateMobileTopBar — different script block, same page */
+  window.APP_NATIVE_TOKENS = APP_NATIVE_TOKENS;
 
   /* Wrapped token addresses used for chart history queries.
    * The Uniswap V3 subgraph indexes WETH/WBNB/etc — not the literal 'NATIVE' ID.

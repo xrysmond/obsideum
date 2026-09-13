@@ -25,14 +25,15 @@ window.STATE = {
   activeWallet: 0,   /* number — index of active wallet in wallets[]                 */
 
   /* ── Navigation ── */
-  view:           'markets',    /* 'markets' | 'settings'                            */
+  view:           'portfolio',  /* 'portfolio' | 'explore' | 'settings'              */
   rightPanel:     null,         /* 'token' | 'swap' | 'history' | null               */
-  mobileView:     'markets',    /* 'markets' | 'token' | 'swap' | 'history' | 'settings' */
+  mobileView:     'portfolio',  /* 'portfolio' | 'explore' | 'swap' | 'accounts' | 'token' | 'settings' */
   prevMobileView: null,         /* string | null — back arrow destination            */
-  mobileTab:      'portfolio',  /* 'portfolio' | 'swap' | 'accounts'                 */
+  mobileTab:      'portfolio',  /* 'portfolio' | 'explore' | 'swap' | 'accounts'    */
 
   /* ── Active content ── */
-  token: null,  /* string | null — contract address of currently viewed token        */
+  token:        null,  /* string | null — contract address of currently viewed token */
+  tokenChainId: null,  /* number | null — chainId of active token; required when token='NATIVE' */
 
   /* ── Live data — populated by prices.js ── */
   prices:       {},  /* { [address]: { usd, change24h, updatedAt } }                */

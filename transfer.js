@@ -486,6 +486,30 @@
     });
   }
 
+  /* Cinematic transition between send steps.
+   * dir 'fwd': step 1 exits up, step 2 enters from below.
+   * dir 'back': step 2 exits down, step 1 enters from above. */
+  function stepTransition(outEl, inEl, dir, onSwitch) {
+    if (!outEl || !inEl) {
+      if (onSwitch) onSwitch();
+      return;
+    }
+    var exitY = dir === 'fwd' ? '-10px' : '10px';
+    outEl.style.cssText = 'opacity:0;transform:translateY(' + exitY + ');transition:opacity 160ms ease,transform 160ms ease;pointer-events:none';
+    setTimeout(function () {
+      outEl.hidden          = true;
+      outEl.style.cssText   = '';
+      if (onSwitch) onSwitch();
+      inEl.hidden           = false;
+      var enterY = dir === 'fwd' ? '14px' : '-10px';
+      inEl.style.cssText    = 'opacity:0;transform:translateY(' + enterY + ')';
+      /* Force reflow then start entrance */
+      void inEl.offsetWidth;
+      inEl.style.cssText    = 'opacity:1;transform:none;transition:opacity 240ms var(--ease-spr),transform 240ms var(--ease-spr)';
+      setTimeout(function () { inEl.style.cssText = ''; }, 260);
+    }, 170);
+  }
+
   /* ─────────────────────────────────────────────────────────────────────
      STEP 2 — TOKEN SELECTED
      Hides step 1, shows step 2. Renders badge and wires all interactions.
@@ -505,12 +529,11 @@
 
     var step1 = document.getElementById('send-step-token');
     var step2 = document.getElementById('send-step-recipient');
-    if (step1) step1.hidden = true;
-    if (step2) step2.hidden = false;
-
-    renderSelectedTokenBadge(token);
-    resetStep2Fields();
-    wireStep2();
+    stepTransition(step1, step2, 'fwd', function () {
+      renderSelectedTokenBadge(token);
+      resetStep2Fields();
+      wireStep2();
+    });
   }
 
   function renderSelectedTokenBadge(token) {
@@ -576,15 +599,12 @@
 
     var step1 = document.getElementById('send-step-token');
     var step2 = document.getElementById('send-step-recipient');
-    if (step1) step1.hidden = false;
-    if (step2) step2.hidden = true;
-
-    /* Restore chip filter state */
-    filterSendList(_activeChip);
     clearTimeout(_resolveTimer);
     clearTimeout(_gasTimer);
+    stepTransition(step2, step1, 'back', function () {
+      filterSendList(_activeChip);
+    });
   }
-
   /* Reset all step 2 UI fields to initial state */
   function resetStep2Fields() {
     var resets = {

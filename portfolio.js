@@ -274,7 +274,7 @@
             var num = parseFloat(result.balance);
             if (isNaN(num) || num <= 0) return;
 
-            /* Use NATIVE_<chainId> price key written by prices.js updateAllPrices().
+            /* Use NATIVE_<chainId> price key written by market.js (DeFiLlama).
              * Fall back to 'NATIVE' for backwards compat with any cached data. */
             var priceKey   = 'NATIVE_' + chainId;
             var priceEntry = prices && (prices[priceKey] || prices['NATIVE']);
